@@ -1,0 +1,24 @@
+# virtualenvs
+.venv/
+venv/
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+# runtime state (DB, hosted payloads, certs, secrets)
+*.db
+*.db-wal
+*.db-shm
+hosted/
+data/
+certs/
+.env
+# release archives
+*.zip
+*.tar.gz
+*.tgz
+# local Claude Code working notes (not for the public repo)
+CLAUDE.md

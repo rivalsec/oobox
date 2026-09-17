@@ -1,0 +1,46 @@
+# systemd unit — the recommended bare-metal deploy.
+#
+#   sudo python3 -m venv /opt/oobox/venv
+#   sudo /opt/oobox/venv/bin/pip install /path/to/oobox   # the repo (or: oobox, once on PyPI)
+#   sudo useradd --system --no-create-home oobox || true
+#   sudo install -d -o oobox -g oobox /var/lib/oobox
+#   sudo mkdir -p /etc/oobox && sudo cp deploy/.env.example /etc/oobox/env   # then edit it
+#   sudo cp deploy/oobox.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now oobox
+#
+# TLS (optional): after deploy/get-cert.sh issues the wildcard, let this non-root service
+# read the Let's Encrypt files (oobox then auto-detects them). Install the deploy hook —
+# it grants the ACL (including a default ACL, so renewals keep working) and restarts:
+#   sudo install -m 755 deploy/certbot-deploy-hook.sh /etc/letsencrypt/renewal-hooks/deploy/oobox
+#   sudo /etc/letsencrypt/renewal-hooks/deploy/oobox
+
+[Unit]
+Description=oobox out-of-band interaction server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=oobox
+Group=oobox
+EnvironmentFile=/etc/oobox/env
+Environment=OOB_DB=/var/lib/oobox/oobox.db
+Environment=OOB_FILES_DIR=/var/lib/oobox/hosted
+WorkingDirectory=/var/lib/oobox
+ExecStart=/opt/oobox/venv/bin/python -m oobox serve
+Restart=on-failure
+RestartSec=3
+
+# Bind privileged ports (53/80/443/25) as a non-root user.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/oobox
+
+[Install]
+WantedBy=multi-user.target

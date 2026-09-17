@@ -1,0 +1,26 @@
+# oobox — one all-in-one container. Uses host networking so the DNS/SMTP source
+# IPs of target-originated traffic are the real client IPs (not a docker-proxy NAT
+# address), which matters for attribution in the interaction log.
+#
+#   cp deploy/.env.example deploy/.env   # then edit
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# See README.md for DNS delegation, MX, firewall, and the certbot wildcard flow.
+
+services:
+  oobox:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: oobox:latest
+    container_name: oobox
+    restart: unless-stopped
+    network_mode: host          # bind 53/80/443/25/8443 directly on the host
+    env_file: .env
+    volumes:
+      - oobox-data:/data        # SQLite DB + hosted payloads (survives restarts)
+      - ./certs:/certs:ro        # certbot output; see README certbot flow
+    # host networking already exposes the ports; `ports:` is ignored with it.
+
+volumes:
+  oobox-data:
