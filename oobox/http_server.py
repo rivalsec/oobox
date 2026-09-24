@@ -116,17 +116,20 @@ def make_app(config: Config, store: Store, collector_js: str,
                     headers={"Content-Type": rec["content_type"] or "application/octet-stream"},
                 )
 
-        # 4) catcher — log the full request, return benign 200
+        # 4) catcher — log the full request (incl. body, any method), return benign 200
+        body, body_bytes = await _read_capped_body(request, config.max_capture_bytes)
         store.add_interaction(token, "http", src_ip,
-                              f"{request.method} {path}", _http_detail(request, path))
+                              f"{request.method} {path}",
+                              _http_detail(request, path, body, body_bytes))
         return _benign()
 
     app.router.add_route("*", "/{tail:.*}", dispatch)
     return app
 
 
-def _http_detail(request: web.Request, path: str) -> dict:
-    return {
+def _http_detail(request: web.Request, path: str,
+                 body: str | None = None, body_bytes: int = 0) -> dict:
+    detail = {
         "method": request.method,
         "path": path,
         "query": dict(request.query),
@@ -135,6 +138,12 @@ def _http_detail(request: web.Request, path: str) -> dict:
         "src_ip": _client_ip(request),
         "scheme": request.scheme,
     }
+    # Include the raw request body when one was read (any method, capped at
+    # max_capture_bytes). Empty bodies are omitted to keep GET hits tidy.
+    if body:
+        detail["body"] = body
+        detail["body_bytes"] = body_bytes
+    return detail
 
 
 def _benign() -> web.Response:
