@@ -112,8 +112,8 @@ async def run_selftest() -> bool:
             # non-GET request body is captured verbatim (any method); use a dedicated
             # label so the primary token's ledger stays intact for the cursor fixture.
             exfil = "secret=exfil-42&pw=hunter2"
-            async with sess.put(f"{hurl}/leak", headers={"Host": f"bodycap.{DOMAIN}"},
-                                data=exfil) as r:
+            async with sess.put(f"{hurl}/leak?id=1&id=2&x=a",
+                                headers={"Host": f"bodycap.{DOMAIN}"}, data=exfil) as r:
                 chk.ok(r.status == 200, "HTTP catcher benign 200 on PUT")
             async with sess.get(f"{api}/poll?token=bodycap", headers=hdr) as r:
                 bc = await r.json()
@@ -121,6 +121,10 @@ async def run_selftest() -> bool:
                             if i["detail"].get("method") == "PUT"), None)
             chk.ok(put_hit is not None and put_hit["detail"].get("body") == exfil,
                    "HTTP catcher stores request body regardless of method")
+            # repeated query keys survive via the raw query string (dict() would drop one)
+            chk.ok(put_hit is not None
+                   and put_hit["detail"].get("query_string") == "id=1&id=2&x=a",
+                   "HTTP catcher stores raw query string incl. repeated params")
 
             # --- file host ---
             svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>'

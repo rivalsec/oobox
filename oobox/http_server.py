@@ -132,7 +132,10 @@ def _http_detail(request: web.Request, path: str,
     detail = {
         "method": request.method,
         "path": path,
+        # Parsed form for convenience; dict() collapses repeated keys, so also keep
+        # the raw query string verbatim (nothing dropped, order/encoding preserved).
         "query": dict(request.query),
+        "query_string": request.query_string,
         "host": request.headers.get("Host", ""),
         "headers": _headers_dict(request),
         "src_ip": _client_ip(request),
