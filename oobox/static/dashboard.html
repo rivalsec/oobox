@@ -422,21 +422,30 @@ async function tabMailLists(body){
     }, "no mail yet");
 }
 
-// Render untrusted email HTML safely. The HTML never touches the dashboard DOM (no
-// innerHTML sink): it lives only inside a fully sandboxed iframe — sandbox="" gives it a
-// null origin with no scripts, no same-origin, no forms/popups/top-navigation, so it can
-// neither run code nor read the dashboard's session cookie. The frame's own CSP then
-// blocks every network fetch (default-src 'none'), so remote images / tracking pixels /
-// beacons cannot fire and can't leak that the operator opened the mail. Inline styles and
-// data: images are allowed so formatting survives.
-function mailHtmlFrame(html){
+// Insert our CSP <meta> as the first thing in the email's own <head> (creating one if the
+// email has none), so the email stays a single well-formed document — parsed in standards
+// mode via its own doctype — instead of being nested inside a second wrapper document.
+function withCsp(html, meta){
+  var m;
+  if ((m = html.match(/<head[^>]*>/i)))  return html.replace(m[0], m[0] + meta);
+  if ((m = html.match(/<html[^>]*>/i)))  return html.replace(m[0], m[0] + "<head>" + meta + "</head>");
+  return "<head>" + meta + "</head>" + html;
+}
+// Render untrusted email HTML safely. The HTML never touches the dashboard DOM (no innerHTML
+// sink): it lives only inside a fully sandboxed iframe — sandbox="" gives it a null origin
+// with no scripts, no same-origin, no forms/popups/top-navigation, so it can neither run code
+// nor read the dashboard's session cookie. The frame's own CSP (intersected with the strict
+// dashboard CSP it inherits) then governs network fetches. By default remote images are
+// blocked (img-src data:), so tracking pixels/beacons can't fire and can't leak that the
+// operator opened the mail; loadRemote=true relaxes to https:/http: images ONLY (still no
+// scripts, no fetch/connect) for the operator to opt into, at the cost of exposing their IP.
+function mailHtmlFrame(html, loadRemote){
+  var img = loadRemote ? "https: http: data:" : "data:";
   var meta = '<meta http-equiv="Content-Security-Policy" content="'
-    + "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
-    + "font-src data:; media-src data:; frame-src 'none'; form-action 'none'"
+    + "default-src 'none'; style-src 'unsafe-inline'; img-src " + img + "; "
+    + "font-src data:; frame-src 'none'; form-action 'none'"
     + '">';
-  var srcdoc = '<!doctype html><html><head><meta charset="utf-8">' + meta
-    + '</head><body>' + html + '</body></html>';
-  return el("iframe", {"class":"mailhtml", sandbox:"", srcdoc:srcdoc,
+  return el("iframe", {"class":"mailhtml", sandbox:"", srcdoc: withCsp(html, meta),
                        referrerpolicy:"no-referrer", loading:"lazy"});
 }
 // A collapsed <pre> (inert text) revealed by a toggle button — for source / payload
@@ -450,9 +459,22 @@ function sourceToggle(td, label, text){
 }
 function mailHtml(td, html){
   td.appendChild(el("h4",{text:"HTML"}));
-  td.appendChild(el("div",{class:"muted", style:"font-size:11px;margin:-2px 0 6px",
-    text:"rendered sandboxed — scripts & remote images blocked"}));
-  td.appendChild(mailHtmlFrame(html));
+  var note = el("div",{class:"muted", style:"font-size:11px;margin:-2px 0 6px"});
+  var imgBtn = el("button",{class:"srcbtn"});
+  var wrap = el("div");
+  var loaded = false;
+  function render(){
+    clear(wrap); wrap.appendChild(mailHtmlFrame(html, loaded));
+    note.textContent = loaded
+      ? "remote images loaded — your IP is now exposed to the sender's servers (scripts still blocked)"
+      : "rendered sandboxed — scripts & remote images blocked";
+    imgBtn.textContent = loaded ? "block remote images" : "load remote images";
+  }
+  imgBtn.addEventListener("click", function(){ loaded = !loaded; render(); });
+  td.appendChild(note);
+  td.appendChild(imgBtn);
+  td.appendChild(wrap);
+  render();
   sourceToggle(td, "source", html);   // raw HTML part, one click away
 }
 
@@ -463,10 +485,15 @@ function emailDetail(td, full){
     ["to",(det.rcpt_tos||[]).join(", ")],["subject",full.subject]]));
   if ((det.links||[]).length){
     td.appendChild(el("h4",{text:"Links"}));
-    var lb = el("div",{class:"links"});
+    var lb = el("div",{class:"links"}); lb.hidden = true;   // collapsed by default
     det.links.forEach(function(u){ lb.appendChild(
       el("a",{href:u,target:"_blank",rel:"noopener noreferrer",text:u})); });
-    td.appendChild(lb);
+    var n = det.links.length, noun = " link" + (n>1?"s":"");
+    var lbtn = el("button",{class:"srcbtn",text:"show "+n+noun,onclick:function(){
+      lb.hidden = !lb.hidden;
+      lbtn.textContent = (lb.hidden?"show ":"hide ")+n+noun;
+    }});
+    td.appendChild(lbtn); td.appendChild(lb);
   }
   if (det.text){ td.appendChild(el("h4",{text:"Text"})); td.appendChild(el("pre",{text:det.text})); }
   if (det.html){ mailHtml(td, det.html); }

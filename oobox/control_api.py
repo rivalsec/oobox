@@ -661,7 +661,11 @@ def make_api_app(config: Config, store: Store, acme: AcmeStore,
     return app
 
 
-_DASH_CSP = ("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; "
+# img-src permits remote schemes so the sandboxed email-HTML frame can load remote images
+# ONLY when the operator opts in (the frame's own injected CSP blocks them by default and is
+# the real gate; this is just the ceiling it intersects against). The dashboard's own
+# document never inserts untrusted markup (inert-text rendering), so this widens nothing there.
+_DASH_CSP = ("default-src 'none'; img-src 'self' data: https: http:; style-src 'unsafe-inline'; "
              "script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; "
              "frame-src 'self'; base-uri 'none'; frame-ancestors 'none'")
 
