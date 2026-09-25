@@ -98,6 +98,10 @@ CREATE TABLE IF NOT EXISTS hosted_files (
     size     INTEGER,
     sha256   TEXT,
     disk_path TEXT NOT NULL,     -- where the bytes live on disk
+    status   INTEGER,            -- optional response status override (programmable response)
+    resp_headers TEXT,           -- optional JSON dict of extra response headers
+    redirect TEXT,               -- optional Location: target (status defaults to 302)
+    delay_ms INTEGER,            -- optional artificial delay (ms) before responding
     UNIQUE(token, path)
 );
 """
@@ -130,6 +134,14 @@ class Store:
             if "tag" not in cols:
                 self._db.execute("ALTER TABLE xss_reports ADD COLUMN tag TEXT")
                 self._db.commit()
+            fcols = [r[1] for r in
+                     self._db.execute("PRAGMA table_info(hosted_files)").fetchall()]
+            for col, decl in (("status", "INTEGER"), ("resp_headers", "TEXT"),
+                              ("redirect", "TEXT"), ("delay_ms", "INTEGER")):
+                if col not in fcols:
+                    self._db.execute(
+                        f"ALTER TABLE hosted_files ADD COLUMN {col} {decl}")
+            self._db.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -521,15 +533,21 @@ class Store:
 
     # ------------------------------------------------------- hosted files
     def add_file(self, token: str, path: str, content_type: str, size: int,
-                sha256: str, disk_path: str) -> None:
+                sha256: str, disk_path: str, status: int | None = None,
+                resp_headers: str | None = None, redirect: str | None = None,
+                delay_ms: int | None = None) -> None:
         with self._lock:
             self._db.execute(
-                "INSERT INTO hosted_files(token, path, ts, content_type, size, sha256, disk_path) "
-                "VALUES(?,?,?,?,?,?,?) "
+                "INSERT INTO hosted_files(token, path, ts, content_type, size, sha256, "
+                "disk_path, status, resp_headers, redirect, delay_ms) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(token, path) DO UPDATE SET "
                 "ts=excluded.ts, content_type=excluded.content_type, size=excluded.size, "
-                "sha256=excluded.sha256, disk_path=excluded.disk_path",
-                (token, path, now(), content_type, size, sha256, disk_path),
+                "sha256=excluded.sha256, disk_path=excluded.disk_path, "
+                "status=excluded.status, resp_headers=excluded.resp_headers, "
+                "redirect=excluded.redirect, delay_ms=excluded.delay_ms",
+                (token, path, now(), content_type, size, sha256, disk_path,
+                 status, resp_headers, redirect, delay_ms),
             )
             self._db.commit()
 
@@ -543,7 +561,8 @@ class Store:
     def files(self, token: str) -> list[dict]:
         with self._lock:
             rows = self._db.execute(
-                "SELECT token, path, ts, content_type, size, sha256 FROM hosted_files "
+                "SELECT token, path, ts, content_type, size, sha256, "
+                "status, resp_headers, redirect, delay_ms FROM hosted_files "
                 "WHERE token=? ORDER BY ts DESC", (token,)
             ).fetchall()
         return [dict(r) for r in rows]

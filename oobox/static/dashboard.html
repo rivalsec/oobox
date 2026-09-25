@@ -693,8 +693,14 @@ var FILE_PRESETS = [
   {name:"Blank", path:"/payload.txt", type:"text/plain", tpl:function(b){ return ""; }}
 ];
 
-async function uploadRaw(path, contentType, body){
+async function uploadRaw(path, contentType, body, rule){
   var url = "/upload?token="+encodeURIComponent(state.sel)+"&path="+encodeURIComponent(path);
+  if(rule){
+    if(rule.status)   url += "&status="+encodeURIComponent(rule.status);
+    if(rule.redirect) url += "&redirect="+encodeURIComponent(rule.redirect);
+    if(rule.delay_ms) url += "&delay_ms="+encodeURIComponent(rule.delay_ms);
+    (rule.headers||[]).forEach(function(h){ url += "&header="+encodeURIComponent(h); });
+  }
   var r = await fetch(url, {method:"POST", credentials:"same-origin",
     headers:{"Content-Type": contentType || "application/octet-stream"}, body: body});
   if (r.status === 401){ location = "/login"; return null; }
@@ -710,6 +716,10 @@ async function tabFiles(body){
   var pathI = el("input",{type:"text",value:"/payload.txt",id:"file-path"});
   var typeI = el("input",{type:"text",value:"text/plain",id:"file-type"});
   var ta = el("textarea",{placeholder:"file contents…",id:"file-body"});
+  var statusI = el("input",{type:"text",value:"",id:"file-status",placeholder:"e.g. 302, 500 (optional)"});
+  var redirectI = el("input",{type:"text",value:"",id:"file-redirect",placeholder:"https://… — sets Location: (optional)"});
+  var delayI = el("input",{type:"text",value:"",id:"file-delay",placeholder:"ms (optional)"});
+  var headersTA = el("textarea",{id:"file-headers",placeholder:"extra response headers — one per line, Name: Value"});
   var msg = el("span",{class:"ok"});
   var presets = el("div",{class:"presets"});
   FILE_PRESETS.forEach(function(p){
@@ -720,7 +730,13 @@ async function tabFiles(body){
   var createBtn = el("button",{class:"primary",text:"Create / host", onclick:async function(){
     msg.textContent=""; msg.className="ok";
     if(!pathI.value){ msg.className="err"; msg.textContent="path required"; return; }
-    var res = await uploadRaw(pathI.value, typeI.value, ta.value);
+    var rule = {
+      status: (statusI.value||"").trim(),
+      redirect: (redirectI.value||"").trim(),
+      delay_ms: (delayI.value||"").trim(),
+      headers: (headersTA.value||"").split("\n").map(function(x){return x.trim();}).filter(Boolean)
+    };
+    var res = await uploadRaw(pathI.value, typeI.value, ta.value, rule);
     if(!res) return;
     if(res.status===200){ msg.textContent="hosted → "+res.json.url; tabFilesList(body,base); }
     else { msg.className="err"; msg.textContent="error "+res.status+": "+(res.json.error||""); }
@@ -744,6 +760,13 @@ async function tabFiles(body){
     presets,
     el("div",{class:"grid2"},[
       field("path", pathI), field("content-type", typeI)]),
+    el("details",{style:"margin-top:8px"},[
+      el("summary",{class:"hint",text:"Programmable response (optional) — status · redirect · headers · delay"}),
+      el("div",{class:"grid2",style:"margin-top:6px"},[
+        field("status code", statusI), field("delay (ms)", delayI)]),
+      field("redirect (Location:)", redirectI),
+      field("extra response headers", headersTA)
+    ]),
     el("div",{class:"row2",style:"margin-top:8px"},[el("div",{style:"flex:1"},"")]),
     ta,
     el("div",{class:"row2"},[createBtn, el("span",{class:"hint",text:"— or —"}),
@@ -769,9 +792,23 @@ function isTextType(ct){
 
 async function editFile(body, base, f, msg){
   var pathI=document.getElementById("file-path"), typeI=document.getElementById("file-type"),
-      ta=document.getElementById("file-body");
+      ta=document.getElementById("file-body"),
+      statusI=document.getElementById("file-status"),
+      redirectI=document.getElementById("file-redirect"),
+      delayI=document.getElementById("file-delay"),
+      headersTA=document.getElementById("file-headers");
   if(!pathI||!typeI||!ta) return;
   pathI.value=f.path; typeI.value=f.content_type||"application/octet-stream";
+  if(statusI) statusI.value = f.status || "";
+  if(redirectI) redirectI.value = f.redirect || "";
+  if(delayI) delayI.value = f.delay_ms || "";
+  if(headersTA){
+    var hs = "";
+    try { var o = f.resp_headers ? JSON.parse(f.resp_headers) : null;
+          if(o){ hs = Object.keys(o).map(function(k){ return k+": "+o[k]; }).join("\n"); } }
+    catch(e){}
+    headersTA.value = hs;
+  }
   if(!isTextType(f.content_type)){
     ta.value="";
     if(msg){ msg.className="err";
@@ -798,18 +835,27 @@ async function deleteFile(body, base, f, msg){
   tabFilesList(body, base);
 }
 
+function ruleSummary(f){
+  var bits=[];
+  if(f.redirect){ bits.push((f.status||302)+" → "+f.redirect); }
+  else if(f.status){ bits.push("status "+f.status); }
+  if(f.resp_headers && f.resp_headers!=="{}"){ bits.push("+headers"); }
+  if(f.delay_ms){ bits.push(f.delay_ms+"ms"); }
+  return bits.join("  ");
+}
 async function tabFilesList(body, base){
   var box = body.querySelector("#fileslist"); if(!box) return;
   var d = await api("/files?token="+encodeURIComponent(state.sel)); if(!d) return; clear(box);
   box.appendChild(el("div",{class:"sect",text:"Hosted files"}));
   if (!d.files.length){ box.appendChild(el("div",{class:"muted",text:"none yet"})); return; }
   var msg = el("span",{class:"ok"});
-  var t = table(["path","type","size","url",""]); var tb = t.querySelector("tbody");
+  var t = table(["path","type","size","response","url",""]); var tb = t.querySelector("tbody");
   d.files.forEach(function(f){
     var url = base + f.path;
     tb.appendChild(el("tr",null,[
       el("td",{class:"mono",text:f.path}), el("td",{text:f.content_type||"—"}),
       el("td",{text:String(f.size)}),
+      el("td",{class:"mono",text:ruleSummary(f)||"—"}),
       el("td",null,[el("a",{href:url,target:"_blank",rel:"noopener noreferrer",text:"open"}),
         document.createTextNode("  "), copyBtn(url)]),
       el("td",null,[

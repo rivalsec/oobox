@@ -36,6 +36,7 @@ import asyncio
 import hashlib
 import hmac
 import html as htmllib
+import json
 import logging
 import os
 import posixpath
@@ -51,7 +52,7 @@ from .acme import AcmeStore
 from .config import Config, is_staging_cert
 from .craft import craft_addresses
 from .dns_server import RECORD_TYPES, ZONE_KEY
-from .http_server import CALLBACK_PATH, COLLECTOR_JS_PATH
+from .http_server import CALLBACK_PATH, COLLECTOR_JS_PATH, MAX_DELAY_MS
 from .store import Store
 from .tokens import is_label, is_token, label_from_rcpt, mint
 
@@ -226,11 +227,37 @@ class ControlAPI:
             f.write(body)
         ctype = request.headers.get("Content-Type", "application/octet-stream").split(";")[0]
         sha = hashlib.sha256(body).hexdigest()
-        self.store.add_file(token, path, ctype, len(body), sha, disk_path)
+
+        # Optional programmable response (SSRF/open-redirect/XXE staging): status override,
+        # extra response headers (?header=Name:%20Value, repeatable), a 3xx Location
+        # (?redirect=), and/or an artificial delay (?delay_ms=). A pure rule needs no body.
+        status = _int(request.query.get("status"), 0) or None
+        if status is not None and not (100 <= status <= 599):
+            raise web.HTTPBadRequest(text="status must be 100..599")
+        redirect = (request.query.get("redirect") or "").strip() or None
+        if redirect and len(redirect) > 4096:
+            raise web.HTTPBadRequest(text="redirect too long")
+        delay_ms = _int(request.query.get("delay_ms"), 0) or None
+        if delay_ms is not None:
+            delay_ms = max(0, min(delay_ms, MAX_DELAY_MS)) or None
+        hdrs: dict[str, str] = {}
+        for hv in request.query.getall("header", []):
+            k, sep, v = hv.partition(":")
+            k, v = k.strip(), v.strip()
+            if sep and k:
+                hdrs[k] = v
+        resp_headers = json.dumps(hdrs) if hdrs else None
+
+        self.store.add_file(token, path, ctype, len(body), sha, disk_path,
+                            status=status, resp_headers=resp_headers,
+                            redirect=redirect, delay_ms=delay_ms)
         url = self._base(token) + path
-        log.info("hosted token=%s path=%s bytes=%s -> %s", token, path, len(body), url)
+        log.info("hosted token=%s path=%s bytes=%s status=%s redirect=%s -> %s",
+                 token, path, len(body), status, redirect, url)
         return web.json_response({"token": token, "path": path, "url": url,
-                                  "size": len(body), "sha256": sha, "content_type": ctype})
+                                  "size": len(body), "sha256": sha, "content_type": ctype,
+                                  "status": status, "redirect": redirect,
+                                  "delay_ms": delay_ms, "headers": hdrs or None})
 
     async def files(self, request: web.Request) -> web.Response:
         token = _require(request, "token")

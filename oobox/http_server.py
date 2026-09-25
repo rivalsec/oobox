@@ -12,7 +12,10 @@ same discipline as the DNS listener.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import os
 import ssl
 
 from aiohttp import web
@@ -27,6 +30,8 @@ log = logging.getLogger("oobox.http")
 COLLECTOR_JS_PATH = "/c.js"
 CALLBACK_PATH = "/c"
 H2C_PATH = "/h2c.js"          # vendored html2canvas, loaded by the collector for screenshots
+CATCHALL_PATH = "/*"          # per-token programmable-response rule matching any path
+MAX_DELAY_MS = 30000          # cap on a programmable response's artificial delay
 
 _CORS = {
     "Access-Control-Allow-Origin": "*",
@@ -100,21 +105,25 @@ def make_app(config: Config, store: Store, collector_js: str,
         if path == CALLBACK_PATH and (request.method == "POST" or "d" in request.query):
             return await _collect_xss(request, config, store, token, src_ip)
 
-        # 3) hosted file
-        if request.method in ("GET", "HEAD"):
-            rec = store.get_file(token, path)
-            if rec:
-                store.add_interaction(token, "file", src_ip, f"{request.method} {path}",
-                                      {**_http_detail(request, path),
-                                       "served_bytes": rec["size"],
-                                       "sha256": rec["sha256"]})
-                if request.method == "HEAD":
-                    return web.Response(status=200,
-                                        content_type=rec["content_type"] or "application/octet-stream")
-                return web.FileResponse(
-                    rec["disk_path"],
-                    headers={"Content-Type": rec["content_type"] or "application/octet-stream"},
-                )
+        # 3) hosted file OR programmable responder rule. Exact-path match first, then a
+        #    per-token catch-all rule at "/*". A rule (redirect/status/headers/delay) fires
+        #    for ANY method; static bytes are served for GET/HEAD as before. A plain bytes
+        #    file hit with a non-GET/HEAD method and no rule falls through to the catcher.
+        rec = store.get_file(token, path)
+        if rec is None and path != CATCHALL_PATH:
+            rec = store.get_file(token, CATCHALL_PATH)
+        if rec is not None:
+            has_bytes = bool(rec.get("size")) and rec.get("disk_path") \
+                and os.path.exists(rec["disk_path"])
+            if rec.get("redirect"):
+                _log_file_hit(store, token, src_ip, request, path, rec)
+                return await _serve_rule(rec)
+            if request.method in ("GET", "HEAD") and has_bytes:
+                _log_file_hit(store, token, src_ip, request, path, rec)
+                return await _serve_file(request, rec)
+            if _has_rule(rec):
+                _log_file_hit(store, token, src_ip, request, path, rec)
+                return await _serve_rule(rec)
 
         # 4) catcher — log the full request (incl. body, any method), return benign 200
         body, body_bytes = await _read_capped_body(request, config.max_capture_bytes)
@@ -152,6 +161,71 @@ def _http_detail(request: web.Request, path: str,
 def _benign() -> web.Response:
     # Deliberately boring: proves reach without offering anything to a scanner.
     return web.Response(text="ok\n", content_type="text/plain")
+
+
+# ------------------------------------------------------- programmable responses
+# A hosted_files row may carry an operator-defined response: a status override, extra
+# headers, a 3xx redirect (Location), and/or an artificial delay. This turns the file host
+# into an SSRF/open-redirect/XXE staging responder (webhook.site-style) while every hit is
+# still logged as a ``file`` interaction. FOR AUTHORIZED TESTING ONLY.
+
+def _has_rule(rec: dict) -> bool:
+    return bool(rec.get("redirect") or rec.get("status")
+                or rec.get("resp_headers") or rec.get("delay_ms"))
+
+
+def _resp_headers(rec: dict) -> dict:
+    h = dict(_CORS)
+    raw = rec.get("resp_headers")
+    if raw:
+        try:
+            for k, v in (json.loads(raw) or {}).items():
+                h[str(k)] = str(v)
+        except Exception:
+            pass
+    return h
+
+
+async def _apply_delay(rec: dict) -> None:
+    d = rec.get("delay_ms")
+    if d:
+        try:
+            await asyncio.sleep(min(int(d), MAX_DELAY_MS) / 1000.0)
+        except Exception:
+            pass
+
+
+def _log_file_hit(store, token: str, src_ip: str, request: web.Request,
+                  path: str, rec: dict) -> None:
+    detail = {**_http_detail(request, path),
+              "served_bytes": rec.get("size") or 0, "sha256": rec.get("sha256")}
+    rule = {k: rec.get(k) for k in ("status", "redirect", "delay_ms") if rec.get(k)}
+    if rec.get("resp_headers"):
+        rule["headers"] = True
+    if rule:
+        detail["rule"] = rule
+    store.add_interaction(token, "file", src_ip, f"{request.method} {path}", detail)
+
+
+async def _serve_rule(rec: dict) -> web.Response:
+    await _apply_delay(rec)
+    headers = _resp_headers(rec)
+    if rec.get("redirect"):
+        headers["Location"] = str(rec["redirect"])
+        return web.Response(status=int(rec["status"]) if rec.get("status") else 302,
+                            headers=headers, text="")
+    return web.Response(status=int(rec["status"]) if rec.get("status") else 200,
+                        headers=headers, text="")
+
+
+async def _serve_file(request: web.Request, rec: dict) -> web.StreamResponse:
+    await _apply_delay(rec)
+    headers = _resp_headers(rec)
+    headers.setdefault("Content-Type", rec.get("content_type") or "application/octet-stream")
+    status = int(rec["status"]) if rec.get("status") else 200
+    if request.method == "HEAD":
+        return web.Response(status=status, headers=headers)
+    return web.FileResponse(rec["disk_path"], status=status, headers=headers)
 
 
 async def _collect_xss(request, config: Config, store: Store, token: str, src_ip: str):

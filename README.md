@@ -66,8 +66,12 @@ proof, payload hosting, blind-XSS capture, and email are **owned, private, and u
   `_acme-challenge` `TXT` for self-answered ACME, and query logging. A DNS lookup of
   `<label>.OOBDOMAIN` is confirmed OOB reach.
 - **HTTP/HTTPS catcher** with wildcard TLS: logs the full request and returns a benign `200`.
-- **Token-scoped file host**: upload a payload, get `https://<label>.OOBDOMAIN/<path>`; every
-  fetch is logged. Serves SSRF fetch targets, XXE external DTDs, SVG/JS XSS, redirect pages, etc.
+- **Token-scoped file host + programmable responses**: upload a payload, get
+  `https://<label>.OOBDOMAIN/<path>`; every fetch is logged. Serves SSRF fetch targets, XXE
+  external DTDs, SVG/JS XSS, etc. Each path (or a per-token catch-all `/*`) can also carry an
+  operator-defined response — custom **status**, **headers**, a 3xx **redirect** (`Location`),
+  and/or an artificial **delay** — so the host doubles as an open-redirect / SSRF / XXE
+  **response-staging** responder.
 - **Catch-all SMTP** (MX for the zone): stores full messages (headers, bodies, attachment
   metadata) and extracts links; grouped per mailbox. Optional **outbound send** from any
   `<name>@OOBDOMAIN` via a smarthost relay or direct-to-MX.
@@ -419,8 +423,25 @@ curl -s "${auth[@]}" "$API/file?token=$T&path=/p.svg"                   # raw by
 curl -s "${auth[@]}" -X DELETE "$API/files?token=$T&path=/p.svg"        # remove it
 ```
 
+Turn a hosted path into a **programmable responder** (open-redirect / SSRF / XXE staging) with
+`status`, `redirect`, `delay_ms`, and a repeatable `header=Name: Value` (a pure rule needs no body):
+
+```bash
+# 302 open-redirect (SSRF pivot to a metadata endpoint) — no body needed
+curl -s "${auth[@]}" -X POST "$API/upload?token=$T&path=/go&redirect=https://169.254.169.254/latest/meta-data/&status=302"
+# custom status + header + served body
+curl -s "${auth[@]}" -H 'Content-Type: application/json' --data '{"ok":true}' \
+     "$API/upload?token=$T&path=/api&status=500&header=X-Test:%201"
+# per-token catch-all: every otherwise-unmatched path returns this response
+curl -s "${auth[@]}" -X POST "$API/upload?token=$T&path=/*&redirect=https://example.com/&status=307"
+```
+
+Rules fire for **any** method (redirects/status apply to POST SSRF too); static bytes are still
+served for `GET`/`HEAD`. Reserved paths (`/c.js`, `/c`, `/h2c.js`) can't be shadowed.
+
 In the dashboard's **Files** tab each hosted file has **edit** (loads its content back
-into the author form to re-save) and **delete** buttons.
+into the author form to re-save) and **delete** buttons; the "Programmable response" section of
+the author form sets status/redirect/headers/delay, and the file list shows the active rule.
 
 ### Blind XSS
 
@@ -509,7 +530,7 @@ except `/healthz`, `/login`, `/favicon.ico`. List endpoints paginate newest-firs
 | `GET /mail?token=&before=&limit=` · `GET /mail/{id}?token=` | received mail (list · full body + links) |
 | `GET /xss?token=&before=&limit=` · `GET /xss/{id}?token=` | blind-XSS reports (list · full capture) |
 | `GET /pages?token=&before=&limit=` · `GET /pages/{id}?token=` | spidered / additional pages |
-| `POST /upload?token=&path=` (raw body) | host a payload (re-upload to edit); returns its URL |
+| `POST /upload?token=&path=` (raw body) | host a payload (re-upload to edit); optional programmable response via `status`, `redirect`, `delay_ms`, repeatable `header=Name: Value` (path `/*` = per-token catch-all); returns its URL |
 | `GET /files?token=` · `GET /file?token=&path=` | hosted files (list · raw bytes) |
 | `DELETE /files?token=&path=` | delete one hosted file (row + on-disk bytes) |
 | `POST /send` `{to,subject,body,html?}` + `from` \| `token` \| `from_full` | send mail (needs `OOB_SMTP_SEND`); `from_full` sends from a crafted address in your zone |
@@ -576,8 +597,10 @@ Contributions welcome — please run `pytest` and keep `python -m oobox selftest
 ## Roadmap / known limitations
 
 - No generic outbound webhooks yet (Telegram only).
-- The file host serves static bytes; there's no HTTP-3xx **open-redirect responder** (a hosted
-  redirect *page* works) and no **DNS-rebinding** responder.
+- The file host serves static bytes **or an operator-defined programmable response** (custom
+  status/headers, a 3xx `Location` redirect, and/or a delay) per path or a per-token catch-all
+  (`/*`) — covering open-redirect and SSRF/XXE response staging. There's still no
+  **DNS-rebinding** responder.
 - No built-in rate-limiting on the public listeners — run it behind a firewall / allowlist.
 - Wildcard TLS covers one label deep (`<label>.OOBDOMAIN`); multi-level hosts work for
   DNS/HTTP/SMTP but not for HTTPS with a valid cert. Put per-sink tags in the path, not a second

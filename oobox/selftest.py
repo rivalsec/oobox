@@ -11,6 +11,7 @@ import asyncio
 import smtplib
 import tempfile
 from email.message import EmailMessage
+from urllib.parse import quote
 
 import aiohttp
 from dnslib import DNSRecord
@@ -169,6 +170,54 @@ async def run_selftest() -> bool:
             chk.ok(gone != v2, "public host stops serving deleted file")
             async with sess.delete(f"{api}/files?token=filelife&path=/e.txt", headers=hdr) as r:
                 chk.ok(r.status == 404, "delete of missing file 404s")
+
+            # --- programmable HTTP responses (SSRF/open-redirect/XXE staging) ---
+            rhost = f"resp.{DOMAIN}"
+            # redirect rule, no body
+            async with sess.post(
+                    f"{api}/upload?token=resp&path=/go"
+                    "&redirect=https://169.254.169.254/latest/meta-data/&status=302",
+                    headers=hdr, data=b"") as r:
+                chk.ok(r.status == 200, "upload redirect rule")
+            async with sess.get(f"{hurl}/go", headers={"Host": rhost},
+                                allow_redirects=False) as r:
+                loc = r.headers.get("Location", "")
+                chk.ok(r.status == 302 and loc.endswith("/latest/meta-data/"),
+                       "redirect rule returns 302 + Location")
+            # status + custom header + served body
+            async with sess.post(
+                    f"{api}/upload?token=resp&path=/teapot&status=418"
+                    "&header=" + quote("X-Brew: earl-grey"),
+                    headers={**hdr, "Content-Type": "text/plain"},
+                    data=b"short and stout") as r:
+                chk.ok(r.status == 200, "upload status+header rule")
+            async with sess.get(f"{hurl}/teapot", headers={"Host": rhost}) as r:
+                tbody = await r.read()
+                chk.ok(r.status == 418 and r.headers.get("X-Brew") == "earl-grey"
+                       and tbody == b"short and stout",
+                       "status+header rule serves custom status/header/body")
+            # per-token catch-all "/*" applies to any unmatched path
+            async with sess.post(
+                    f"{api}/upload?token=respcat&path=/*"
+                    "&redirect=https://example.com/&status=307",
+                    headers=hdr, data=b"") as r:
+                chk.ok(r.status == 200, "upload catch-all rule")
+            async with sess.get(f"{hurl}/anything/else",
+                                headers={"Host": f"respcat.{DOMAIN}"},
+                                allow_redirects=False) as r:
+                chk.ok(r.status == 307
+                       and r.headers.get("Location") == "https://example.com/",
+                       "catch-all /* rule applies to any path")
+            # a reserved path can't be shadowed by a rule
+            async with sess.post(f"{api}/upload?token=resp&path=/c.js&redirect=https://x/",
+                                 headers=hdr, data=b"") as r:
+                chk.ok(r.status == 400, "reserved path rejected as rule")
+            # rule hits are logged as file interactions carrying the applied rule
+            async with sess.get(f"{api}/poll?token=resp&kind=file", headers=hdr) as r:
+                rp = await r.json()
+            chk.ok(any(i["detail"].get("rule", {}).get("redirect")
+                       for i in rp["interactions"]),
+                   "programmable rule hit logged with rule detail")
 
             # --- XSS collector ---
             report = {"uri": "https://admin.target.example/panel",
