@@ -68,6 +68,9 @@
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   pre{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px;
       overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-word;font-size:12px}
+  .mailhtml{width:100%;height:460px;border:1px solid var(--border);border-radius:8px;
+      background:#fff;resize:vertical;overflow:auto;display:block}
+  .srcbtn{margin-top:8px;font-size:12px;padding:4px 10px}
   .detail{background:var(--panel2)}
   .detail td{padding:12px 14px}
   .kv{display:grid;grid-template-columns:120px 1fr;gap:4px 12px;font-size:13px}
@@ -398,7 +401,7 @@ async function tabMailLists(body){
           ["result", res.ok ? ("delivered via "+(res.host||"?")+":"+(res.port||"?"))
                             : ("FAILED: "+(res.error||"delivery error"))]]));
         if (det.body){ td.appendChild(el("h4",{text:"Body"})); td.appendChild(el("pre",{text:det.body})); }
-        if (det.html){ td.appendChild(el("h4",{text:"HTML (text)"})); td.appendChild(el("pre",{text:det.html})); }
+        if (det.html){ mailHtml(td, det.html); }
       });
       stb.appendChild(tr);
     });
@@ -419,6 +422,40 @@ async function tabMailLists(body){
     }, "no mail yet");
 }
 
+// Render untrusted email HTML safely. The HTML never touches the dashboard DOM (no
+// innerHTML sink): it lives only inside a fully sandboxed iframe — sandbox="" gives it a
+// null origin with no scripts, no same-origin, no forms/popups/top-navigation, so it can
+// neither run code nor read the dashboard's session cookie. The frame's own CSP then
+// blocks every network fetch (default-src 'none'), so remote images / tracking pixels /
+// beacons cannot fire and can't leak that the operator opened the mail. Inline styles and
+// data: images are allowed so formatting survives.
+function mailHtmlFrame(html){
+  var meta = '<meta http-equiv="Content-Security-Policy" content="'
+    + "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+    + "font-src data:; media-src data:; frame-src 'none'; form-action 'none'"
+    + '">';
+  var srcdoc = '<!doctype html><html><head><meta charset="utf-8">' + meta
+    + '</head><body>' + html + '</body></html>';
+  return el("iframe", {"class":"mailhtml", sandbox:"", srcdoc:srcdoc,
+                       referrerpolicy:"no-referrer", loading:"lazy"});
+}
+// A collapsed <pre> (inert text) revealed by a toggle button — for source / payload
+// inspection without making the detail panel huge by default.
+function sourceToggle(td, label, text){
+  var pre = el("pre",{text:text}); pre.hidden = true;
+  var btn = el("button",{class:"srcbtn",text:"view "+label,onclick:function(){
+    pre.hidden = !pre.hidden; btn.textContent = (pre.hidden?"view ":"hide ")+label;
+  }});
+  td.appendChild(btn); td.appendChild(pre);
+}
+function mailHtml(td, html){
+  td.appendChild(el("h4",{text:"HTML"}));
+  td.appendChild(el("div",{class:"muted", style:"font-size:11px;margin:-2px 0 6px",
+    text:"rendered sandboxed — scripts & remote images blocked"}));
+  td.appendChild(mailHtmlFrame(html));
+  sourceToggle(td, "source", html);   // raw HTML part, one click away
+}
+
 // Shared received-email detail renderer (per-token Mail tab + global Emails page).
 function emailDetail(td, full){
   var det = full.detail||{};
@@ -432,7 +469,8 @@ function emailDetail(td, full){
     td.appendChild(lb);
   }
   if (det.text){ td.appendChild(el("h4",{text:"Text"})); td.appendChild(el("pre",{text:det.text})); }
-  if (det.html){ td.appendChild(el("h4",{text:"HTML (text)"})); td.appendChild(el("pre",{text:det.html})); }
+  if (det.html){ mailHtml(td, det.html); }
+  if (det.raw){ td.appendChild(el("h4",{text:"Raw message"})); sourceToggle(td, "raw", det.raw); }
 }
 function expandMail(tb, tr, token, id){
   expandRow(tb, tr, function(td){

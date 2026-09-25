@@ -226,6 +226,9 @@ async def run_selftest() -> bool:
                 async with sess.get(f"{api}/mail/{mid}?token={token}", headers=hdr) as r:
                     mr = await r.json()
                 chk.ok(link in mr["detail"].get("links", []), "email link extracted")
+                raw = mr["detail"].get("raw", "")
+                chk.ok("Subject: Confirm your account" in raw and link in raw,
+                       "raw RFC822 message captured (headers + body)")
 
             # --- plus-tag routing ---
             await asyncio.to_thread(_send_mail, c.smtp_port, f"{token}+signup@{DOMAIN}",

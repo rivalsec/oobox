@@ -663,7 +663,7 @@ def make_api_app(config: Config, store: Store, acme: AcmeStore,
 
 _DASH_CSP = ("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; "
              "script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; "
-             "base-uri 'none'; frame-ancestors 'none'")
+             "frame-src 'self'; base-uri 'none'; frame-ancestors 'none'")
 
 
 def _login_html(error: str = "") -> str:

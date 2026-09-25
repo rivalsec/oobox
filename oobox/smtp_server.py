@@ -75,14 +75,16 @@ class CatchAllHandler:
         return "250 Message accepted for delivery"
 
     def _parse(self, msg, envelope) -> dict:
+        raw = envelope.content or b""
         detail: dict = {
             "mail_from": envelope.mail_from,
             "rcpt_tos": list(envelope.rcpt_tos),
-            "size": len(envelope.content or b""),
+            "size": len(raw),
+            # Always keep the full raw RFC822 message (capped) for the dashboard's raw
+            # viewer — extracted text/html parts below are for convenience, not a substitute.
+            "raw": raw[: self.c.max_capture_bytes].decode("utf-8", "replace"),
         }
         if msg is None:
-            detail["raw"] = (envelope.content or b"")[: self.c.max_capture_bytes].decode(
-                "utf-8", "replace")
             return detail
 
         detail["headers"] = {k: _decode(v) for k, v in msg.items()}
