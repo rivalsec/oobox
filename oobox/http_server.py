@@ -56,7 +56,19 @@ def _headers_dict(request: web.Request) -> dict:
 
 
 async def _read_capped_body(request: web.Request, cap: int) -> tuple[str, int]:
-    raw = await request.content.read(cap + 1)
+    # StreamReader.read(n) returns UP TO n bytes but may return fewer before EOF (it hands
+    # back whatever is currently buffered), so a single read(cap+1) silently truncates any
+    # body that spans more than one network read — e.g. a real browser's screenshot dataURL,
+    # which then fails to parse as JSON. Loop until we have cap+1 bytes or hit EOF.
+    chunks: list[bytes] = []
+    remaining = cap + 1
+    while remaining > 0:
+        chunk = await request.content.read(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    raw = b"".join(chunks)
     total = len(raw)
     truncated = total > cap
     body = raw[:cap]
