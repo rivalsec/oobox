@@ -1171,12 +1171,25 @@ document.getElementById("tokmore").addEventListener("click", function(){
 // Title = home → the global Activity feed (the default landing when no token is selected).
 document.getElementById("home").addEventListener("click", function(){ state.sel = null; renderFeed(); });
 
+// Deep-link routing: an alert (or a shared link) points at "#t=<token>&tab=xss" to open a
+// specific token on a specific tab. Falls back to no-op when the hash is empty/malformed.
+function routeHash(){
+  var h = (location.hash || "").replace(/^#/, "");
+  if (!h) return false;
+  var p = {};
+  h.split("&").forEach(function(kv){
+    var i = kv.indexOf("="); if (i > 0) p[decodeURIComponent(kv.slice(0,i))] = decodeURIComponent(kv.slice(i+1)); });
+  if (p.t){ selectToken(p.t, p.tab || "interactions"); return true; }
+  return false;
+}
+window.addEventListener("hashchange", routeHash);
+
 // Background refresh: the timer updates ONLY the sidebar token counts. The main panel
 // holds editable forms (compose mail, create/upload file, payload builder, zone editor), so
 // it is NEVER auto-rebuilt — that can't wipe what you're typing. Reload the main view on
 // demand with Refresh, a tab, or selecting a token.
 loadTokens();
-renderFeed();          // land on the global Activity feed on open (no token selected yet)
+if (!routeHash()) renderFeed();   // land on the global Activity feed on open, unless deep-linked
 setInterval(function(){
   if (document.visibilityState === "visible") loadTokens();
 }, 15000);

@@ -126,6 +126,7 @@ class Config:
     tg_chat: str | None = None               # chat id (user, or negative for a group)
     tg_proxy: str | None = None              # optional http(s)://… or socks5://… proxy
     tg_api_base: str = "https://api.telegram.org"  # override for a proxying Bot API
+    panel_url: str | None = None             # OOB_PANEL_URL; dashboard base for alert deep-links
     alert_window: float = 5.0                # coalesce a burst within this many seconds → 1 msg
     alert_kinds: list[str] = field(
         default_factory=lambda: ["dns", "http", "file", "mail", "xss"])
@@ -153,6 +154,23 @@ class Config:
 
     def http_tls(self) -> tuple[str, str] | None:
         return (self.tls_cert, self.tls_key) if self.tls_cert and self.tls_key else None
+
+    def panel_base(self) -> str:
+        """Base URL of the dashboard, used for deep-links in alerts. Defaults to
+        ``https://<domain>:<api_port>/`` (https when the API has a cert; the port is
+        dropped when it's the scheme default). ``OOB_PANEL_URL`` overrides it — set that
+        when the panel is reached via a different host, a reverse proxy, or a tunnel."""
+        if self.panel_url:
+            return self.panel_url.rstrip("/") + "/"
+        scheme = "https" if self.api_tls() else "http"
+        default_port = 443 if scheme == "https" else 80
+        port = "" if self.api_port == default_port else f":{self.api_port}"
+        return f"{scheme}://{self.domain}{port}/"
+
+    def panel_link(self, token: str, tab: str = "xss") -> str:
+        """Deep-link that opens ``token`` on the given dashboard tab (hash-routed)."""
+        from urllib.parse import quote
+        return f"{self.panel_base()}#t={quote(token, safe='')}&tab={tab}"
 
     def ip_allowed(self, ip: str) -> bool:
         try:
@@ -251,6 +269,7 @@ class Config:
         c.tg_chat = e.get("OOB_TG_CHAT") or None
         c.tg_proxy = e.get("OOB_TG_PROXY") or None
         c.tg_api_base = e.get("OOB_TG_API_BASE", c.tg_api_base).rstrip("/")
+        c.panel_url = e.get("OOB_PANEL_URL") or None
         c.alert_window = float(e.get("OOB_ALERT_WINDOW", c.alert_window))
         kinds = _split(e.get("OOB_ALERT_KINDS"))
         if kinds:

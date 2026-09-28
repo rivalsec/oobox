@@ -15,6 +15,7 @@ a self-hosted Bot API / reverse proxy where api.telegram.org is blocked.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 
 import aiohttp
@@ -73,17 +74,43 @@ class Alerter:
         await self._send(text)
 
     def _format(self) -> str:
+        # Messages are sent as HTML (parse_mode below). The capture summary — which for an
+        # XSS hit is the origin URL of the page that fired — is wrapped in <code> so Telegram
+        # renders it verbatim and does NOT auto-link it (a tap on a live victim URL would
+        # leak the tester's IP / re-trigger the payload). The one clickable link we add is a
+        # deep-link into the dashboard's XSS tab instead.
+        esc = html.escape
         if self._total == 1 and self._last:
             kind, token, summary = self._last
             e = _EMOJI.get(kind, "•")
-            return f"{e} oobox: {kind} hit on {token}\n{summary}".strip()
-        parts = " ".join(f"{_EMOJI.get(k,'•')}{k}×{n}" for k, n in sorted(self._counts.items()))
-        toks = ", ".join(self._tokens[:5]) + (f" (+{len(self._tokens)-5})" if len(self._tokens) > 5 else "")
+            msg = f"{e} oobox: {esc(kind)} hit on {esc(token)}"
+            if summary:
+                msg += f"\n<code>{esc(summary)}</code>"
+            link = self._panel_link(kind, token)
+            if link:
+                msg += f"\n{link}"
+            return msg
+        parts = " ".join(f"{_EMOJI.get(k,'•')}{esc(k)}×{n}" for k, n in sorted(self._counts.items()))
+        shown = ", ".join(esc(t) for t in self._tokens[:5])
+        toks = shown + (f" (+{len(self._tokens)-5})" if len(self._tokens) > 5 else "")
         msg = f"🛰 oobox: {self._total} OOB hits in {self.window:g}s\n{parts}\ntokens: {toks}"
         if self._last:
             kind, token, summary = self._last
-            msg += f"\nlatest: {kind} {token} {summary}"
+            msg += f"\nlatest: {esc(kind)} {esc(token)} <code>{esc(summary)}</code>"
+            link = self._panel_link(kind, token)
+            if link:
+                msg += f"\n{link}"
         return msg
+
+    def _panel_link(self, kind: str, token: str | None) -> str | None:
+        """A clickable dashboard deep-link for an XSS hit (opens that token's XSS tab)."""
+        if kind != "xss" or not token or token == "?":
+            return None
+        try:
+            url = self.c.panel_link(token, "xss")
+        except Exception:  # never let link-building break an alert
+            return None
+        return f'↳ <a href="{html.escape(url, quote=True)}">open XSS tab</a>'
 
     # ------------------------------------------------------------- delivery
     async def _client(self) -> aiohttp.ClientSession:
@@ -107,7 +134,8 @@ class Alerter:
 
     async def _send(self, text: str) -> None:
         url = f"{self.c.tg_api_base}/bot{self.c.tg_token}/sendMessage"
-        payload = {"chat_id": self.c.tg_chat, "text": text, "disable_web_page_preview": True}
+        payload = {"chat_id": self.c.tg_chat, "text": text,
+                   "parse_mode": "HTML", "disable_web_page_preview": True}
         try:
             session = await self._client()
         except RuntimeError:
