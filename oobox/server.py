@@ -111,8 +111,9 @@ class Server:
         for d in (config_dir, work_dir, logs_dir, webroot):
             os.makedirs(d, exist_ok=True)
         try:
+            certbot_bin = os.path.join(os.path.dirname(sys.executable), "certbot")
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "certbot", "renew",
+                certbot_bin, "renew",
                 "--config-dir", config_dir,
                 "--work-dir", work_dir,
                 "--logs-dir", logs_dir,

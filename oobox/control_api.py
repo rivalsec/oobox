@@ -470,8 +470,9 @@ class ControlAPI:
         for d in (webroot, config_dir, work_dir, logs_dir):
             os.makedirs(d, exist_ok=True)
 
+        certbot_bin = os.path.join(os.path.dirname(sys.executable), "certbot")
         cmd = [
-            sys.executable, "-m", "certbot", "certonly", "--webroot",
+            certbot_bin, "certonly", "--webroot",
             "-w", webroot, "-d", domain,
             "--config-dir", config_dir,
             "--work-dir", work_dir,
