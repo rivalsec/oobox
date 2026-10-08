@@ -44,6 +44,7 @@ import logging
 import os
 import posixpath
 import ssl
+import sys
 import time
 
 from aiohttp import web
@@ -470,7 +471,7 @@ class ControlAPI:
             os.makedirs(d, exist_ok=True)
 
         cmd = [
-            "certbot", "certonly", "--webroot",
+            sys.executable, "-m", "certbot", "certonly", "--webroot",
             "-w", webroot, "-d", domain,
             "--config-dir", config_dir,
             "--work-dir", work_dir,

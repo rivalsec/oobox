@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from pathlib import Path
 
 from .acme import AcmeStore
@@ -111,7 +112,7 @@ class Server:
             os.makedirs(d, exist_ok=True)
         try:
             proc = await asyncio.create_subprocess_exec(
-                "certbot", "renew",
+                sys.executable, "-m", "certbot", "renew",
                 "--config-dir", config_dir,
                 "--work-dir", work_dir,
                 "--logs-dir", logs_dir,
