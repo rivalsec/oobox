@@ -106,6 +106,7 @@ class Config:
     # --- storage / retention ---
     db_path: str = "oobox.db"
     files_dir: str = "hosted"
+    certs_dir: str = "certs"                   # certbot config/webroot for alias domain certs
     ttl_days: int = 7                        # retention for interactions/emails/reports/files
     max_upload_bytes: int = 5 * 1024 * 1024  # per hosted file
     max_capture_bytes: int = 2 * 1024 * 1024  # per DNS/HTTP/XSS capture body stored
@@ -251,6 +252,7 @@ class Config:
 
         c.db_path = e.get("OOB_DB", c.db_path)
         c.files_dir = e.get("OOB_FILES_DIR", c.files_dir)
+        c.certs_dir = e.get("OOB_CERTS_DIR", c.certs_dir)
         c.ttl_days = int(e.get("OOB_TTL_DAYS", c.ttl_days))
         c.max_upload_bytes = int(e.get("OOB_MAX_UPLOAD", c.max_upload_bytes))
         c.max_capture_bytes = int(e.get("OOB_MAX_CAPTURE", c.max_capture_bytes))

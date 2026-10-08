@@ -1188,22 +1188,49 @@ async function renderAliases(){
   ]));
 
   if(data.aliases.length){
-    var t=table(["domain","token","note","added",""]); var tb=t.querySelector("tbody");
+    var t=table(["domain","token","TLS","note",""]); var tb=t.querySelector("tbody");
     data.aliases.forEach(function(a){
+      var certCell = el("td");
+      if(a.cert_dir){
+        certCell.appendChild(el("span",{class:"ok",text:"valid"}));
+      } else if(a.cert_err){
+        certCell.appendChild(el("span",{class:"err",text:a.cert_err}));
+        certCell.appendChild(document.createTextNode(" "));
+        certCell.appendChild(certBtn(a));
+      } else {
+        certCell.appendChild(certBtn(a));
+      }
+      var actions = el("td",{style:"white-space:nowrap"},[
+        el("button",{text:"delete",onclick:async function(){
+          await fetch("/aliases/"+a.id,{method:"DELETE",credentials:"same-origin"}); renderAliases();
+        }})
+      ]);
       tb.appendChild(el("tr",null,[
         el("td",{class:"mono",text:a.domain}),
         el("td",{class:"mono",text:a.token}),
+        certCell,
         el("td",{text:a.note||"—"}),
-        el("td",{text:ts(a.ts)}),
-        el("td",null,[el("button",{text:"delete",onclick:async function(){
-          await fetch("/aliases/"+a.id,{method:"DELETE",credentials:"same-origin"}); renderAliases();
-        }})])
+        actions
       ]));
     });
     main.appendChild(t);
+    main.appendChild(el("div",{class:"hint",
+      text:"Get cert runs certbot HTTP-01 against Let’s Encrypt. The domain must resolve to this server on port 80. "
+         + "HTTPS listener (OOB_TLS_CERT) must be enabled for SNI to serve the cert."}));
   } else {
     main.appendChild(el("div",{class:"muted",text:"no domain aliases configured"}));
   }
+}
+function certBtn(a){
+  var btn = el("button",{text:"Get cert",onclick:async function(){
+    btn.disabled=true; btn.textContent="issuing…";
+    var r=await fetch("/aliases/"+a.id+"/cert",{method:"POST",credentials:"same-origin"});
+    var j=await r.json().catch(function(){return {};});
+    if(r.ok && j.ok){ renderAliases(); }
+    else { btn.textContent="retry"; btn.disabled=false;
+      alert("Cert error: "+(j.error||"unknown")+"\n\n"+(j.output||"")); }
+  }});
+  return btn;
 }
 
 // ---- events ---------------------------------------------------------------

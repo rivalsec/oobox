@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 from .acme import AcmeStore
@@ -65,7 +66,9 @@ class Server:
         self.http = await start_http(self.c, self.store, self.collector_js,
                                      self.html2canvas_js)
         self.smtp = await start_smtp(self.c, self.store)
-        self.api = await start_api(self.c, self.store, self.acme, self.dashboard_html)
+        sni_update = self.http.sni.reload if self.http.sni else None
+        self.api = await start_api(self.c, self.store, self.acme, self.dashboard_html,
+                                   sni_update=sni_update)
         self._sweeper = asyncio.create_task(self._sweep_loop())
         if self.alerter.enabled:
             log.info("Telegram alerts on (window=%ss, kinds=%s, proxy=%s)",
@@ -74,6 +77,7 @@ class Server:
 
     async def _sweep_loop(self) -> None:
         # Sweep hourly. Removes captures older than ttl_days and their on-disk files.
+        # Also runs certbot renew for alias certs.
         while True:
             try:
                 removed = self.store.sweep(self.c.ttl_days)
@@ -86,9 +90,44 @@ class Server:
                 self.store.delete_files([f["id"] for f in stale])
                 if any(removed.values()) or stale:
                     log.info("sweep removed=%s files=%s", removed, len(stale))
-            except Exception as e:  # never let the sweeper kill the process
+            except Exception as e:
                 log.warning("sweep error: %s", e)
+            try:
+                await self._renew_alias_certs()
+            except Exception as e:
+                log.warning("cert renewal error: %s", e)
             await asyncio.sleep(3600)
+
+    async def _renew_alias_certs(self) -> None:
+        aliases = self.store.aliases_with_certs()
+        if not aliases:
+            return
+        certs_dir = os.path.abspath(self.c.certs_dir)
+        config_dir = os.path.join(certs_dir, "le")
+        work_dir = os.path.join(certs_dir, "work")
+        logs_dir = os.path.join(certs_dir, "logs")
+        webroot = os.path.join(certs_dir, "webroot")
+        for d in (config_dir, work_dir, logs_dir, webroot):
+            os.makedirs(d, exist_ok=True)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "certbot", "renew",
+                "--config-dir", config_dir,
+                "--work-dir", work_dir,
+                "--logs-dir", logs_dir,
+                "--webroot-path", webroot,
+                "--non-interactive",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+            output = stdout.decode("utf-8", "replace")
+            if "renewed" in output.lower():
+                log.info("cert renewal: %s", output.strip().split("\n")[-1])
+                if self.http and self.http.sni:
+                    self.http.sni.reload()
+        except FileNotFoundError:
+            pass
+        except asyncio.TimeoutError:
+            log.warning("cert renewal: certbot renew timed out")
 
     async def stop(self) -> None:
         if self._sweeper:

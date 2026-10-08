@@ -86,6 +86,8 @@ def make_app(config: Config, store: Store, collector_js: str,
     app = web.Application(
         client_max_size=config.max_upload_bytes + config.max_screenshot_bytes + 65536)
 
+    acme_webroot = os.path.join(config.certs_dir, "webroot")
+
     async def dispatch(request: web.Request) -> web.StreamResponse:
         host = request.headers.get("Host", "")
         token = label_from_host(host, config.domain)
@@ -94,6 +96,17 @@ def make_app(config: Config, store: Store, collector_js: str,
 
         if request.method == "OPTIONS":
             return web.Response(status=204, headers=_CORS)
+
+        # ACME HTTP-01 challenge: serve for ANY host (cert doesn't exist yet)
+        if path.startswith("/.well-known/acme-challenge/"):
+            challenge_token = path.rsplit("/", 1)[-1]
+            challenge_file = os.path.join(
+                acme_webroot, ".well-known", "acme-challenge", challenge_token)
+            if challenge_token and os.path.isfile(challenge_file):
+                log.info("acme http-01 host=%s token=%s", host, challenge_token)
+                with open(challenge_file, "r") as f:
+                    return web.Response(text=f.read(),
+                                        content_type="text/plain")
 
         if token is None:
             alias = store.alias_for_domain(host)
@@ -289,9 +302,48 @@ async def _collect_xss(request, config: Config, store: Store, token: str, src_ip
     return web.json_response({"ok": True, "id": rid}, headers=_CORS)
 
 
-def _ssl_context(cert: str, key: str) -> ssl.SSLContext:
+class SNIRouter:
+    """Maintains a cache of per-domain SSLContexts and provides an SNI callback
+    that selects the right cert for aliased domains."""
+
+    def __init__(self, default_ctx: ssl.SSLContext | None, store: Store):
+        self._default = default_ctx
+        self._store = store
+        self._contexts: dict[str, ssl.SSLContext] = {}
+        self.reload()
+
+    def reload(self) -> None:
+        new: dict[str, ssl.SSLContext] = {}
+        for alias in self._store.aliases_with_certs():
+            cert_dir = alias["cert_dir"]
+            cert = os.path.join(cert_dir, "fullchain.pem")
+            key = os.path.join(cert_dir, "privkey.pem")
+            if os.path.isfile(cert) and os.path.isfile(key):
+                try:
+                    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                    ctx.load_cert_chain(cert, key)
+                    new[alias["domain"]] = ctx
+                except Exception:
+                    log.warning("failed to load cert for alias %s from %s",
+                                alias["domain"], cert_dir)
+        self._contexts = new
+        if new:
+            log.info("SNI: loaded %d alias cert(s): %s", len(new),
+                     ", ".join(sorted(new)))
+
+    def callback(self, ssl_socket, server_name, ssl_context):
+        if server_name:
+            ctx = self._contexts.get(server_name.lower())
+            if ctx:
+                ssl_socket.context = ctx
+
+
+def _ssl_context(cert: str, key: str, sni_router: SNIRouter | None = None
+                 ) -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert, key)
+    if sni_router:
+        ctx.sni_callback = sni_router.callback
     if is_staging_cert(cert):
         log.warning("%s is a Let's Encrypt STAGING cert — no client will trust it. "
                     "Reissue against production: certbot delete --cert-name <domain>, "
@@ -317,9 +369,11 @@ async def start_http(config: Config, store: Store, collector_js: str,
     log.info("HTTP  listening on %s:%s", ",".join(hosts), http_port)
 
     https_port = None
+    sni = SNIRouter(None, store)
     tls = config.http_tls()
     if tls:
-        ctx = _ssl_context(*tls)
+        ctx = _ssl_context(*tls, sni_router=sni)
+        sni._default = ctx
         secure = None
         for host in hosts:
             s = web.TCPSite(runner, host, config.https_port, ssl_context=ctx)
@@ -331,15 +385,16 @@ async def start_http(config: Config, store: Store, collector_js: str,
     else:
         log.warning("HTTPS disabled (no OOB_TLS_CERT/OOB_TLS_KEY) — catcher is HTTP-only")
 
-    return HTTPListener(runner, sites, http_port, https_port)
+    return HTTPListener(runner, sites, http_port, https_port, sni)
 
 
 class HTTPListener:
-    def __init__(self, runner, sites, http_port, https_port):
+    def __init__(self, runner, sites, http_port, https_port, sni=None):
         self.runner = runner
         self.sites = sites
         self.http_port = http_port
         self.https_port = https_port
+        self.sni = sni
 
     async def close(self):
         await self.runner.cleanup()

@@ -8,6 +8,7 @@ auth check. This is the runnable proxy for the on-VPS verification steps in the 
 from __future__ import annotations
 
 import asyncio
+import os
 import smtplib
 import tempfile
 from email.message import EmailMessage
@@ -67,6 +68,7 @@ async def run_selftest() -> bool:
     c.api_key = "selftest-key-0123456789abcdef"
     c.db_path = f"{tmp}/oobox.db"
     c.files_dir = f"{tmp}/hosted"
+    c.certs_dir = f"{tmp}/certs"
     c.ttl_days = 7
 
     server = Server(c)
@@ -483,6 +485,27 @@ async def run_selftest() -> bool:
             aid = ar["id"]
             async with sess.delete(f"{api}/aliases/{aid}", headers=hdr) as r:
                 chk.ok(r.status == 200, "alias deleted")
+            # HTTP-01 ACME challenge serving (webroot)
+            webroot = os.path.join(tmp, "certs", "webroot", ".well-known", "acme-challenge")
+            os.makedirs(webroot, exist_ok=True)
+            with open(os.path.join(webroot, "test-challenge"), "w") as f:
+                f.write("test-validation-string")
+            async with sess.get(
+                    f"{hurl}/.well-known/acme-challenge/test-challenge",
+                    headers={"Host": "anything.example"}) as r:
+                acme_body = await r.text()
+            chk.ok(r.status == 200 and acme_body == "test-validation-string",
+                   "HTTP-01 challenge served for any host")
+            # non-existent challenge returns benign (not 404)
+            async with sess.get(
+                    f"{hurl}/.well-known/acme-challenge/nonexistent",
+                    headers={"Host": "anything.example"}) as r:
+                chk.ok(r.status == 200, "missing challenge falls through to benign")
+
+            # cert trigger for non-existent alias
+            async with sess.post(f"{api}/aliases/99999/cert", headers=hdr) as r:
+                chk.ok(r.status == 404, "cert trigger for missing alias 404s")
+
             # after deletion, aliased domain no longer caught
             async with sess.get(f"{hurl}/gone",
                                 headers={"Host": "evil.target.test"}) as r:

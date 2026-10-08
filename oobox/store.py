@@ -109,7 +109,9 @@ CREATE TABLE IF NOT EXISTS domain_aliases (
     ts       REAL NOT NULL,
     domain   TEXT NOT NULL UNIQUE, -- external hostname (e.g. evil.target.com)
     token    TEXT NOT NULL,        -- label/token all traffic is attributed to
-    note     TEXT
+    note     TEXT,
+    cert_dir TEXT,                 -- path to letsencrypt/live/<domain>/ (fullchain+privkey)
+    cert_err TEXT                  -- last cert issuance error (cleared on success)
 );
 """
 
@@ -156,8 +158,17 @@ class Store:
                 self._db.executescript("""
                     CREATE TABLE IF NOT EXISTS domain_aliases (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL,
-                        domain TEXT NOT NULL UNIQUE, token TEXT NOT NULL, note TEXT);
+                        domain TEXT NOT NULL UNIQUE, token TEXT NOT NULL, note TEXT,
+                        cert_dir TEXT, cert_err TEXT);
                 """)
+                self._db.commit()
+            else:
+                acols = [r[1] for r in
+                         self._db.execute("PRAGMA table_info(domain_aliases)").fetchall()]
+                for col, decl in (("cert_dir", "TEXT"), ("cert_err", "TEXT")):
+                    if col not in acols:
+                        self._db.execute(
+                            f"ALTER TABLE domain_aliases ADD COLUMN {col} {decl}")
                 self._db.commit()
 
     def close(self) -> None:
@@ -304,6 +315,28 @@ class Store:
             else:
                 rows = self._db.execute(
                     "SELECT * FROM domain_aliases ORDER BY ts DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def update_alias_cert(self, alias_id: int, cert_dir: str | None,
+                          cert_err: str | None) -> bool:
+        with self._lock:
+            cur = self._db.execute(
+                "UPDATE domain_aliases SET cert_dir=?, cert_err=? WHERE id=?",
+                (cert_dir, cert_err, alias_id))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def get_alias(self, alias_id: int) -> dict | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM domain_aliases WHERE id=?", (alias_id,)).fetchone()
+        return dict(row) if row else None
+
+    def aliases_with_certs(self) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM domain_aliases WHERE cert_dir IS NOT NULL"
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def delete_alias(self, alias_id: int) -> bool:

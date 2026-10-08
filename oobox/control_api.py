@@ -94,11 +94,12 @@ def _safe_path(path: str) -> str | None:
 
 class ControlAPI:
     def __init__(self, config: Config, store: Store, acme: AcmeStore,
-                 dashboard_html: str = ""):
+                 dashboard_html: str = "", sni_update=None):
         self.c = config
         self.store = store
         self.acme = acme
         self.dashboard_html = dashboard_html
+        self._sni_update = sni_update
 
     # ----------------------------------------------------------- URL helpers
     def _base(self, token: str) -> str:
@@ -451,6 +452,70 @@ class ControlAPI:
             raise web.HTTPNotFound(text="no such alias")
         return web.json_response({"ok": True, "deleted": rid})
 
+    # ----------------------------------------------------------- alias certs
+    async def alias_cert(self, request: web.Request) -> web.Response:
+        """Trigger certificate issuance for an aliased domain via certbot HTTP-01."""
+        rid = _int(request.match_info["id"], -1)
+        alias = self.store.get_alias(rid)
+        if not alias:
+            raise web.HTTPNotFound(text="no such alias")
+        domain = alias["domain"]
+
+        certs_dir = os.path.abspath(self.c.certs_dir)
+        webroot = os.path.join(certs_dir, "webroot")
+        config_dir = os.path.join(certs_dir, "le")
+        work_dir = os.path.join(certs_dir, "work")
+        logs_dir = os.path.join(certs_dir, "logs")
+        for d in (webroot, config_dir, work_dir, logs_dir):
+            os.makedirs(d, exist_ok=True)
+
+        cmd = [
+            "certbot", "certonly", "--webroot",
+            "-w", webroot, "-d", domain,
+            "--config-dir", config_dir,
+            "--work-dir", work_dir,
+            "--logs-dir", logs_dir,
+            "--non-interactive", "--agree-tos",
+            "--register-unsafely-without-email",
+        ]
+        log.info("alias cert: running %s", " ".join(cmd))
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+            output = stdout.decode("utf-8", "replace")
+        except asyncio.TimeoutError:
+            self.store.update_alias_cert(rid, None, "certbot timed out (120s)")
+            raise web.HTTPGatewayTimeout(text="certbot timed out")
+        except FileNotFoundError:
+            self.store.update_alias_cert(rid, None, "certbot not found")
+            raise web.HTTPServiceUnavailable(
+                text="certbot is not installed — install it with: "
+                     "apt install certbot (or pip install certbot)")
+
+        if proc.returncode == 0:
+            cert_dir = os.path.join(config_dir, "live", domain)
+            cert = os.path.join(cert_dir, "fullchain.pem")
+            key = os.path.join(cert_dir, "privkey.pem")
+            if os.path.isfile(cert) and os.path.isfile(key):
+                self.store.update_alias_cert(rid, cert_dir, None)
+                if self._sni_update:
+                    self._sni_update()
+                log.info("alias cert: issued for %s at %s", domain, cert_dir)
+                return web.json_response({
+                    "ok": True, "domain": domain, "cert_dir": cert_dir})
+            self.store.update_alias_cert(rid, None, "cert files not found after issuance")
+            return web.json_response({
+                "ok": False, "domain": domain, "error": "cert files not found",
+                "output": output}, status=500)
+
+        err = output.strip().split("\n")[-1] if output.strip() else f"exit {proc.returncode}"
+        self.store.update_alias_cert(rid, None, err)
+        log.warning("alias cert: certbot failed for %s: %s", domain, err)
+        return web.json_response({
+            "ok": False, "domain": domain, "error": err,
+            "output": output}, status=502)
+
     # ------------------------------------------------------------- dashboard
     async def dashboard(self, request: web.Request) -> web.Response:
         return web.Response(text=self.dashboard_html, content_type="text/html",
@@ -678,8 +743,8 @@ async def _auth_mw(request: web.Request, handler):
 
 
 def make_api_app(config: Config, store: Store, acme: AcmeStore,
-                 dashboard_html: str = "") -> web.Application:
-    api = ControlAPI(config, store, acme, dashboard_html)
+                 dashboard_html: str = "", sni_update=None) -> web.Application:
+    api = ControlAPI(config, store, acme, dashboard_html, sni_update=sni_update)
     app = web.Application(middlewares=[_auth_mw], client_max_size=config.max_upload_bytes + 65536)
     app[CONFIG_KEY] = config
     r = app.router
@@ -711,6 +776,7 @@ def make_api_app(config: Config, store: Store, acme: AcmeStore,
     r.add_get("/aliases", api.alias_list)
     r.add_post("/aliases", api.alias_add)
     r.add_delete("/aliases/{id}", api.alias_delete)
+    r.add_post("/aliases/{id}/cert", api.alias_cert)
     r.add_post("/acme/present", api.acme_present)
     r.add_post("/acme/cleanup", api.acme_cleanup)
     r.add_get("/healthz", api.healthz)
@@ -768,8 +834,8 @@ def _ssl_context(cert: str, key: str) -> ssl.SSLContext:
 
 
 async def start_api(config: Config, store: Store, acme: AcmeStore,
-                    dashboard_html: str = "") -> "APIListener":
-    app = make_api_app(config, store, acme, dashboard_html)
+                    dashboard_html: str = "", sni_update=None) -> "APIListener":
+    app = make_api_app(config, store, acme, dashboard_html, sni_update=sni_update)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     tls = config.api_tls()
