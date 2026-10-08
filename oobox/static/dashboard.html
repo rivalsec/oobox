@@ -102,6 +102,7 @@
   <button id="navmail">Emails</button>
   <button id="navxss">Blind XSS</button>
   <button id="navzone">DNS Zone</button>
+  <button id="navaliases">Aliases</button>
   <button class="primary" id="new">+ New token</button>
   <button id="refresh">Refresh</button>
   <a href="/logout"><button>Logout</button></a>
@@ -1130,6 +1131,81 @@ async function postStatus(path, body){
   return {status:r.status, json:j, text:(j&&j.error)||""};
 }
 
+// ---- domain aliases page --------------------------------------------------
+async function renderAliases(){
+  state.view = "aliases";
+  document.querySelectorAll(".tok").forEach(function(x){ x.classList.remove("active"); });
+  var main = document.getElementById("main"); clear(main);
+  main.appendChild(el("div",{class:"muted",text:"loading…"}));
+  var data = await api("/aliases"); if(!data) return; clear(main);
+  main.appendChild(el("h2",{text:"Domain Aliases"}));
+  main.appendChild(el("div",{class:"hint",
+    text:"Map external domains (CNAME'd or A-record'd to this server) to a token. "
+       + "HTTP requests and SMTP mail arriving for an aliased domain are logged under the mapped token."}));
+
+  var guide = el("div",{class:"form",style:"font-size:13px"},[
+    el("h4",{text:"Setup guide"}),
+    el("div",null,[
+      el("div",{style:"margin-bottom:8px"},[
+        el("b",{text:"1. Point the external domain at this server "}),
+        el("span",{class:"muted",text:"(at the domain's DNS provider):"})]),
+      el("div",{style:"margin-left:16px;margin-bottom:4px"},[
+        el("span",{class:"muted",text:"CNAME: "}),
+        el("span",{class:"mono",text:"evil.target.com CNAME <token>."+state.domain}),
+        el("span",{class:"muted",text:" — DNS queries also get logged via the CNAME target"})]),
+      el("div",{style:"margin-left:16px;margin-bottom:12px"},[
+        el("span",{class:"muted",text:"or A: "}),
+        el("span",{class:"mono",text:"evil.target.com A <this server IP>"}),
+        el("span",{class:"muted",text:" — HTTP/SMTP only, no DNS logging"})]),
+      el("div",{style:"margin-bottom:8px"},[
+        el("b",{text:"2. Add an alias below "}),
+        el("span",{class:"muted",text:"to map the external domain to a token"})]),
+      el("div",{style:"margin-bottom:8px"},[
+        el("b",{text:"3. Incoming traffic is now caught: "}),
+        el("span",{class:"muted",text:"HTTP requests (Host header) and SMTP mail (RCPT TO) for that domain are logged under the mapped token"})]),
+      el("div",{class:"muted",style:"margin-top:4px",
+        text:"For SMTP: also set the external domain's MX record to point to "+state.domain+". "
+           + "The token does not need to exist yet — captures show in Activity immediately, and creating the token later adds a sidebar entry with all prior hits."})
+    ])
+  ]);
+  main.appendChild(guide);
+
+  var domI=el("input",{type:"text",placeholder:"evil.target.com"});
+  var tokI=el("input",{type:"text",placeholder:"token or label"});
+  var noteI=el("input",{type:"text",placeholder:"note (optional)"});
+  var amsg=el("span",{class:"ok"});
+  var addBtn=el("button",{class:"primary",text:"Add alias", onclick:async function(){
+    amsg.textContent=""; amsg.className="ok";
+    if(!domI.value.trim()){ amsg.className="err"; amsg.textContent="domain required"; return; }
+    if(!tokI.value.trim()){ amsg.className="err"; amsg.textContent="token required"; return; }
+    var r=await postStatus("/aliases",{domain:domI.value,token:tokI.value,note:noteI.value||null});
+    if(r.status===200){ domI.value=tokI.value=noteI.value=""; renderAliases(); }
+    else { amsg.className="err"; amsg.textContent="error "+r.status+": "+(r.json.error||r.text||""); }
+  }});
+  main.appendChild(el("div",{class:"form"},[
+    el("h4",{text:"Add domain alias"}),
+    el("div",{class:"row2"},[domI, tokI, noteI, addBtn, amsg])
+  ]));
+
+  if(data.aliases.length){
+    var t=table(["domain","token","note","added",""]); var tb=t.querySelector("tbody");
+    data.aliases.forEach(function(a){
+      tb.appendChild(el("tr",null,[
+        el("td",{class:"mono",text:a.domain}),
+        el("td",{class:"mono",text:a.token}),
+        el("td",{text:a.note||"—"}),
+        el("td",{text:ts(a.ts)}),
+        el("td",null,[el("button",{text:"delete",onclick:async function(){
+          await fetch("/aliases/"+a.id,{method:"DELETE",credentials:"same-origin"}); renderAliases();
+        }})])
+      ]));
+    });
+    main.appendChild(t);
+  } else {
+    main.appendChild(el("div",{class:"muted",text:"no domain aliases configured"}));
+  }
+}
+
 // ---- events ---------------------------------------------------------------
 document.getElementById("new").addEventListener("click", async function(){
   var note = prompt("Optional note (injection point / target):","");
@@ -1140,6 +1216,7 @@ document.getElementById("new").addEventListener("click", async function(){
 document.getElementById("refresh").addEventListener("click", function(){
   loadTokens();
   if(state.view==="zone") renderZone();
+  else if(state.view==="aliases") renderAliases();
   else if(state.view==="feed") renderFeed();
   else if(state.view==="emails") renderEmails();
   else if(state.view==="xssall") renderBlindXss();
@@ -1149,6 +1226,7 @@ document.getElementById("navfeed").addEventListener("click", renderFeed);
 document.getElementById("navmail").addEventListener("click", renderEmails);
 document.getElementById("navxss").addEventListener("click", renderBlindXss);
 document.getElementById("navzone").addEventListener("click", renderZone);
+document.getElementById("navaliases").addEventListener("click", renderAliases);
 
 // sidebar search (debounced) + clear button + paginated "load more"
 var _searchTimer = null;

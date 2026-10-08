@@ -23,6 +23,9 @@ certbot's DNS-01 hooks call ``/acme/present`` and ``/acme/cleanup``.
     GET  /all/emails  /  GET /all/xss   (before=,limit=)  -> all-token email / blind-XSS lists
     GET  /zone   /  POST /zone                            -> DNS zone config (read / override)
     POST /zone/records  /  DELETE /zone/records/{id}      -> custom DNS records
+    GET  /aliases?token=                                  -> domain aliases (opt. filtered by token)
+    POST /aliases  {domain, token, note?}                 -> add a domain alias
+    DELETE /aliases/{id}                                  -> remove a domain alias
     POST /acme/present / POST /acme/cleanup   {name,value}
     GET  /healthz   (unauthenticated liveness)
 
@@ -418,6 +421,36 @@ class ControlAPI:
         return web.json_response({"victim": victim, "token": token,
                                   "addresses": craft_addresses(self.c.domain, victim, token)})
 
+    # -------------------------------------------------------- domain aliases
+    async def alias_list(self, request: web.Request) -> web.Response:
+        token = (request.query.get("token") or "").strip() or None
+        return web.json_response({"aliases": self.store.aliases(token)})
+
+    async def alias_add(self, request: web.Request) -> web.Response:
+        data = await _json(request)
+        domain = str(data.get("domain") or "").strip().lower().rstrip(".")
+        if not domain or len(domain) > 253:
+            raise web.HTTPBadRequest(text="domain is required (max 253 chars)")
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?", domain):
+            raise web.HTTPBadRequest(text="domain must be a valid hostname")
+        dom = self.c.domain.rstrip(".").lower()
+        if domain == dom or domain.endswith("." + dom):
+            raise web.HTTPBadRequest(text="cannot alias your own zone — use subdomains directly")
+        token = str(data.get("token") or "").strip().lower()
+        if not token or not is_label(token):
+            raise web.HTTPBadRequest(text="token must be a valid DNS-safe label")
+        if self.store.alias_for_domain(domain):
+            raise web.HTTPConflict(text="that domain is already aliased")
+        rid = self.store.add_alias(domain, token, data.get("note"))
+        log.info("alias added #%s %s -> %s", rid, domain, token)
+        return web.json_response({"id": rid, "domain": domain, "token": token})
+
+    async def alias_delete(self, request: web.Request) -> web.Response:
+        rid = _int(request.match_info["id"], -1)
+        if not self.store.delete_alias(rid):
+            raise web.HTTPNotFound(text="no such alias")
+        return web.json_response({"ok": True, "deleted": rid})
+
     # ------------------------------------------------------------- dashboard
     async def dashboard(self, request: web.Request) -> web.Response:
         return web.Response(text=self.dashboard_html, content_type="text/html",
@@ -675,6 +708,9 @@ def make_api_app(config: Config, store: Store, acme: AcmeStore,
     r.add_post("/zone", api.zone_set)
     r.add_post("/zone/records", api.zone_record_add)
     r.add_delete("/zone/records/{id}", api.zone_record_del)
+    r.add_get("/aliases", api.alias_list)
+    r.add_post("/aliases", api.alias_add)
+    r.add_delete("/aliases/{id}", api.alias_delete)
     r.add_post("/acme/present", api.acme_present)
     r.add_post("/acme/cleanup", api.acme_cleanup)
     r.add_get("/healthz", api.healthz)

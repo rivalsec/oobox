@@ -96,6 +96,11 @@ def make_app(config: Config, store: Store, collector_js: str,
             return web.Response(status=204, headers=_CORS)
 
         if token is None:
+            alias = store.alias_for_domain(host)
+            if alias:
+                token = alias["token"]
+
+        if token is None:
             # apex / unknown host: benign, unlogged.
             return _benign()
 

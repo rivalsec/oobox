@@ -48,6 +48,9 @@ class CatchAllHandler:
         if host == dom or host.endswith("." + dom):
             envelope.rcpt_tos.append(address)
             return "250 OK"
+        if self.store.alias_for_domain(host):
+            envelope.rcpt_tos.append(address)
+            return "250 OK"
         return f"550 not authoritative for {host or address}"
 
     async def handle_DATA(self, server, session, envelope):
@@ -59,9 +62,14 @@ class CatchAllHandler:
 
         token = CATCHALL
         for rcpt in envelope.rcpt_tos:
-            t = label_from_rcpt(rcpt, self.c.domain)   # ob-token, else the address label (bob@ → "bob")
+            t = label_from_rcpt(rcpt, self.c.domain)
             if t:
                 token = t
+                break
+            host = rcpt.strip().strip("<>").lower().rsplit("@", 1)[-1] if "@" in rcpt else ""
+            alias = self.store.alias_for_domain(host)
+            if alias:
+                token = alias["token"]
                 break
 
         subject = _decode(msg.get("Subject")) if msg else ""

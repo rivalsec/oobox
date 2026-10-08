@@ -104,6 +104,13 @@ CREATE TABLE IF NOT EXISTS hosted_files (
     delay_ms INTEGER,            -- optional artificial delay (ms) before responding
     UNIQUE(token, path)
 );
+CREATE TABLE IF NOT EXISTS domain_aliases (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts       REAL NOT NULL,
+    domain   TEXT NOT NULL UNIQUE, -- external hostname (e.g. evil.target.com)
+    token    TEXT NOT NULL,        -- label/token all traffic is attributed to
+    note     TEXT
+);
 """
 
 
@@ -142,6 +149,16 @@ class Store:
                     self._db.execute(
                         f"ALTER TABLE hosted_files ADD COLUMN {col} {decl}")
             self._db.commit()
+            # domain_aliases table (added after initial schema)
+            tbls = [r[0] for r in self._db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+            if "domain_aliases" not in tbls:
+                self._db.executescript("""
+                    CREATE TABLE IF NOT EXISTS domain_aliases (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL,
+                        domain TEXT NOT NULL UNIQUE, token TEXT NOT NULL, note TEXT);
+                """)
+                self._db.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -259,6 +276,39 @@ class Store:
     def delete_dns_record(self, rec_id: int) -> bool:
         with self._lock:
             cur = self._db.execute("DELETE FROM dns_records WHERE id=?", (rec_id,))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    # --------------------------------------------------- domain aliases
+    def add_alias(self, domain: str, token: str, note: str | None = None) -> int:
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT INTO domain_aliases(ts, domain, token, note) VALUES(?,?,?,?)",
+                (now(), domain.lower().rstrip("."), token, note))
+            self._db.commit()
+            return cur.lastrowid
+
+    def alias_for_domain(self, domain: str) -> dict | None:
+        d = domain.lower().rstrip(".").split(":")[0]
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM domain_aliases WHERE domain=?", (d,)).fetchone()
+        return dict(row) if row else None
+
+    def aliases(self, token: str | None = None) -> list[dict]:
+        with self._lock:
+            if token:
+                rows = self._db.execute(
+                    "SELECT * FROM domain_aliases WHERE token=? ORDER BY ts DESC",
+                    (token,)).fetchall()
+            else:
+                rows = self._db.execute(
+                    "SELECT * FROM domain_aliases ORDER BY ts DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_alias(self, alias_id: int) -> bool:
+        with self._lock:
+            cur = self._db.execute("DELETE FROM domain_aliases WHERE id=?", (alias_id,))
             self._db.commit()
             return cur.rowcount > 0
 

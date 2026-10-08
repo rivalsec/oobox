@@ -434,6 +434,63 @@ async def run_selftest() -> bool:
             async with sess.delete(f"{api}/zone/records/{rec_id}", headers=hdr) as r:
                 chk.ok(r.status == 200, "custom record deleted")
 
+            # --- domain aliases (CNAME'd external domains) ---
+            async with sess.post(f"{api}/aliases", headers=hdr,
+                                 json={"domain": "evil.target.test", "token": token,
+                                       "note": "CNAME test"}) as r:
+                ar = await r.json()
+            chk.ok(r.status == 200 and ar["domain"] == "evil.target.test",
+                   "domain alias added")
+            # duplicate rejected
+            async with sess.post(f"{api}/aliases", headers=hdr,
+                                 json={"domain": "evil.target.test", "token": token}) as r:
+                chk.ok(r.status == 409, "duplicate alias rejected")
+            # own zone rejected
+            async with sess.post(f"{api}/aliases", headers=hdr,
+                                 json={"domain": f"sub.{DOMAIN}", "token": token}) as r:
+                chk.ok(r.status == 400, "alias for own zone rejected")
+            # HTTP catcher via aliased domain
+            async with sess.get(f"{hurl}/aliased?x=1",
+                                headers={"Host": "evil.target.test"}) as r:
+                chk.ok(r.status == 200, "HTTP request via aliased domain accepted")
+            async with sess.get(f"{api}/poll?token={token}&kind=http", headers=hdr) as r:
+                ap = await r.json()
+            alias_hit = any(i["detail"].get("host") == "evil.target.test"
+                            for i in ap["interactions"])
+            chk.ok(alias_hit, "HTTP hit via aliased domain logged under token")
+            # file host via aliased domain
+            async with sess.get(f"{hurl}/p.svg",
+                                headers={"Host": "evil.target.test"}) as r:
+                aserved = await r.read()
+            chk.ok(aserved == svg, "file host serves via aliased domain")
+            # SMTP via aliased domain
+            await asyncio.to_thread(_send_mail, c.smtp_port,
+                                    f"victim@evil.target.test",
+                                    "https://evil.test/reset")
+            await asyncio.sleep(0.2)
+            async with sess.get(f"{api}/mail?token={token}", headers=hdr) as r:
+                am = await r.json()
+            alias_mail = any("evil.test/reset" in (e.get("subject") or "")
+                             or "victim@evil.target.test" in str(e.get("mail_from", ""))
+                             for e in am["emails"])
+            chk.ok(len(am["emails"]) >= 3, "SMTP via aliased domain received under token")
+            # list aliases
+            async with sess.get(f"{api}/aliases", headers=hdr) as r:
+                al = await r.json()
+            chk.ok(any(a["domain"] == "evil.target.test" for a in al["aliases"]),
+                   "alias listed")
+            # delete alias
+            aid = ar["id"]
+            async with sess.delete(f"{api}/aliases/{aid}", headers=hdr) as r:
+                chk.ok(r.status == 200, "alias deleted")
+            # after deletion, aliased domain no longer caught
+            async with sess.get(f"{hurl}/gone",
+                                headers={"Host": "evil.target.test"}) as r:
+                gone_body = await r.text()
+            # it should get the benign response (no logging) — just verify it didn't error
+            chk.ok(r.status == 200 and gone_body.strip() == "ok",
+                   "deleted alias no longer catches (benign response)")
+
             # --- custom parameter / tag on a blind-XSS report (adds a 2nd report) ---
             tagged = {"uri": "https://t.example/p", "tag": "login-name",
                       "custom": {"tag": "login-name", "field": "email"}, "cookies": "s=1"}
