@@ -13,7 +13,15 @@ certbot's DNS-01 hooks call ``/acme/present`` and ``/acme/cleanup``.
     GET  /files?token=                                    -> hosted files for a token
     GET  /file?token=&path=                               -> raw bytes of one hosted file
     DELETE /files?token=&path=                            -> delete one hosted file (row + bytes)
-    POST /send  {token,to,subject,body,html?,tag?}        -> send mail from <token>@domain
+    POST /send/preview {…same fields as /send}             -> raw RFC822 text (not sent)
+    POST /send  {to,subject, body and/or html, tag?}      -> send mail; sender =
+        token            <token>[+tag]@domain   (replies correlate to the token)
+        from             <local>@domain         (any mailbox on your zone)
+        from_full        any bare address       (any domain — spoof/SPF testing)
+        from_name?       display name ("Name <addr>") for any of the above
+    POST /send  {raw}                                     -> send an operator-edited raw
+        RFC822 message verbatim (all headers editable); sender fields/to still set the
+        SMTP envelope when given, else it's derived from the headers (Bcc stripped)
     GET  /sent?token=                                     -> mail sent from a token
     GET  /lookup?token=                                   -> cross-channel correlation summary
     GET  /craft?victim=&token=                            -> crafted victim-embedding catch-addresses
@@ -300,20 +308,162 @@ class ControlAPI:
         return web.json_response({"ok": True, "token": token, "path": path})
 
     # ------------------------------------------------------------- outbound mail
-    def _crafted_sender(self, full: str) -> tuple[str, str]:
-        """Validate a full crafted From address (from the address builder) and return
-        (mail_from, correlation-label). Restricted to bare addresses within our own zone and
-        to the clean/sendable shapes — quoted/encoded/comment forms are rejected for send."""
+    def _sender_label(self, addr: str, fallback_token: str = "") -> str:
+        """Which label a send from ``addr`` records under: in-zone addresses correlate
+        via ``label_from_rcpt``; an out-of-zone address falls back to the request's
+        token (e.g. sending from a token's Mail tab), else the ``_catchall`` bucket."""
+        dom = self.c.domain
+        host = addr.rsplit("@", 1)[-1]
+        if host == dom or host.endswith("." + dom):
+            return label_from_rcpt(addr, dom) or "_catchall"
+        if fallback_token and (is_token(fallback_token) or is_label(fallback_token)):
+            return fallback_token
+        return "_catchall"
+
+    def _custom_sender(self, full: str, fallback_token: str = "") -> tuple[str, str]:
+        """Validate a full custom From address and return (mail_from, correlation-label).
+
+        Any bare address is accepted — at any domain: spoofing a target's From to test its
+        SPF/DMARC handling is a core use of outbound send. Only the shape is checked: no
+        whitespace/quotes/encoding/comment forms, host must look like a domain."""
         addr = full.strip().strip("<>").lower()
         if "@" not in addr or re.search(r"""[\s<>"'(),;:%]""", addr):
             raise web.HTTPBadRequest(text="from_full must be a bare address (no quotes/%/comments)")
-        host = addr.rsplit("@", 1)[-1]
-        dom = self.c.domain
-        if not (host == dom or host.endswith("." + dom)):
-            raise web.HTTPBadRequest(text="from_full host must be your OOB domain or a subdomain of it")
-        return addr, (label_from_rcpt(addr, dom) or "_catchall")
+        local, _, host = addr.rpartition("@")
+        if not local or len(local) > 64 or len(host) > 253 \
+                or not re.fullmatch(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?", host):
+            raise web.HTTPBadRequest(text="from_full must be a bare address name@host.tld")
+        return addr, self._sender_label(addr, fallback_token)
+
+    def _sender_fields(self, data: dict) -> tuple[str, str]:
+        """Resolve the request's sender to (mail_from, label): a full custom address via
+        `from_full` (any domain), an arbitrary local-part via `from` (bob → bob@OOBDOMAIN),
+        or a token (`tag` becomes a +tag local-part)."""
+        full = str(data.get("from_full") or "").strip()
+        frm = str(data.get("from") or "").strip().lower()
+        tok = str(data.get("token") or "").strip()
+        if full:
+            return self._custom_sender(full, tok)
+        if frm:
+            if "@" in frm:
+                frm = frm.split("@", 1)[0]
+            if not _LOCAL_RE.fullmatch(frm):
+                raise web.HTTPBadRequest(text="invalid 'from' local-part")
+            return f"{frm}@{self.c.domain}", frm.split("+", 1)[0]
+        if tok:
+            if not (is_token(tok) or is_label(tok)):
+                raise web.HTTPBadRequest(text="invalid token")
+            tag = str(data.get("tag") or "").strip()
+            local = f"{tok}+{tag}" if tag else tok
+            return f"{local}@{self.c.domain}", tok
+        raise web.HTTPBadRequest(text="need 'from_full', 'from' (e.g. bob), or 'token'")
+
+    @staticmethod
+    def _from_name(data: dict) -> str:
+        """Optional display name for the From header ("Name <addr>"), header-safe."""
+        name = re.sub(r"\s+", " ", str(data.get("from_name") or "")).strip()
+        if not name:
+            return ""
+        if len(name) > 128 or re.search(r"[\r\n<>\"%,]", name) or not name.isprintable():
+            raise web.HTTPBadRequest(text="from_name must be printable, no header specials")
+        return name
 
     async def send(self, request: web.Request) -> web.Response:
+        if not self.c.smtp_send:
+            raise web.HTTPForbidden(
+                text="outbound send is disabled; set OOB_SMTP_SEND=true (and ideally "
+                     "OOB_SMTP_RELAY) to enable")
+        data = await _json(request)
+
+        # --- raw mode: an operator-edited RFC822 message, sent verbatim ---
+        raw = str(data.get("raw") or "")
+        if raw.strip():
+            return await self._send_raw(request, data, raw)
+
+        to = str(data.get("to") or "").strip()
+        if "@" not in to:
+            raise web.HTTPBadRequest(text="valid 'to' address required")
+        mail_from, label = self._sender_fields(data)
+        name = self._from_name(data)
+
+        subject = data.get("subject") or ""
+        body = data.get("body") or ""
+        html_body = data.get("html") or ""
+
+        from .mailer import send_mail
+        result = await asyncio.to_thread(send_mail, self.c, mail_from, to, subject,
+                                         body, html_body, from_name=name or None)
+        self.store.add_sent_mail(label, mail_from, to, subject,
+                                 {"body": body, "html": html_body or None,
+                                  "from_name": name or None, "result": result})
+        log.info("send from=%s to=%s ok=%s", mail_from, to, result.get("ok"))
+        return web.json_response({"from": mail_from, "to": to, "label": label, "result": result},
+                                 status=200 if result.get("ok") else 502)
+
+    async def _send_raw(self, request: web.Request, data: dict, raw: str) -> web.Response:
+        """Send an operator-edited raw message verbatim (every header editable). Hybrid
+        envelope: explicit sender fields (`from_full`/`from`/`token`) and `to` from the
+        request override the headers, else the envelope is derived from them (Bcc stripped
+        by smtplib in that case; with an explicit `to` we delete Bcc ourselves)."""
+        from email.utils import getaddresses, parseaddr
+        from .mailer import parse_raw, send_raw
+
+        if len(raw) > 1_000_000:
+            raise web.HTTPBadRequest(text="raw message too large (1 MB cap)")
+        try:
+            msg = await asyncio.to_thread(parse_raw, raw)
+        except ValueError as e:
+            raise web.HTTPBadRequest(text=str(e))
+
+        try:
+            mail_from, label = self._sender_fields(data)   # explicit envelope sender
+        except web.HTTPBadRequest:
+            mail_from = parseaddr(str(msg.get("From") or ""))[1].lower()
+            label = self._sender_label(mail_from)
+
+        to = str(data.get("to") or "").strip()
+        env_to = to if "@" in to else None
+        rcpts = [a for _, a in getaddresses(msg.get_all("To", []) + msg.get_all("Cc", [])
+                                            + msg.get_all("Bcc", [])) if a]
+        mail_to = env_to or ", ".join(rcpts)
+        subject = str(msg.get("Subject") or "")
+
+        # pull the text/html parts out of the raw message so the Sent view gets the same
+        # sandboxed HTML preview / body rendering received mail has (raw stays for source)
+        cap = self.c.max_capture_bytes
+        text_body, html_body = "", ""
+        try:
+            parts = msg.walk() if msg.is_multipart() else [msg]
+            for part in parts:
+                ct = part.get_content_type()
+                if ct == "text/html" and not html_body:
+                    html_body = part.get_content()
+                elif ct == "text/plain" and not text_body:
+                    text_body = part.get_content()
+        except Exception:
+            pass  # odd operator-crafted MIME — the raw view still shows it verbatim
+
+        result = await asyncio.to_thread(
+            send_raw, self.c, raw,
+            mail_from if self._has_sender_fields(data) else None, env_to)
+        self.store.add_sent_mail(label, mail_from, mail_to, subject,
+                                 {"body": (text_body or "")[:cap] or None,
+                                  "html": (html_body or "")[:cap] or None,
+                                  "raw": raw[:cap], "result": result})
+        log.info("send-raw from=%s to=%s ok=%s", mail_from, mail_to, result.get("ok"))
+        return web.json_response({"from": mail_from, "to": mail_to, "label": label,
+                                  "result": result},
+                                 status=200 if result.get("ok") else 502)
+
+    @staticmethod
+    def _has_sender_fields(data: dict) -> bool:
+        return bool(str(data.get("from_full") or "").strip()
+                    or str(data.get("from") or "").strip()
+                    or str(data.get("token") or "").strip())
+
+    async def send_preview(self, request: web.Request) -> web.Response:
+        """Build — but do not send — the message a compose form describes, and return its
+        exact raw RFC822 text (built by the same code that sends it) for raw editing."""
         if not self.c.smtp_send:
             raise web.HTTPForbidden(
                 text="outbound send is disabled; set OOB_SMTP_SEND=true (and ideally "
@@ -322,41 +472,14 @@ class ControlAPI:
         to = str(data.get("to") or "").strip()
         if "@" not in to:
             raise web.HTTPBadRequest(text="valid 'to' address required")
+        mail_from, _label = self._sender_fields(data)
+        name = self._from_name(data)
 
-        # sender: a full crafted address via `from_full`, an arbitrary local-part via `from`
-        # (bob → bob@OOBDOMAIN), or a token.
-        full = str(data.get("from_full") or "").strip()
-        frm = str(data.get("from") or "").strip().lower()
-        tok = str(data.get("token") or "").strip()
-        if full:
-            mail_from, label = self._crafted_sender(full)
-        elif frm:
-            if "@" in frm:
-                frm = frm.split("@", 1)[0]
-            if not _LOCAL_RE.fullmatch(frm):
-                raise web.HTTPBadRequest(text="invalid 'from' local-part")
-            mail_from, label = f"{frm}@{self.c.domain}", frm.split("+", 1)[0]
-        elif tok:
-            if not (is_token(tok) or is_label(tok)):
-                raise web.HTTPBadRequest(text="invalid token")
-            tag = str(data.get("tag") or "").strip()
-            local = f"{tok}+{tag}" if tag else tok
-            mail_from, label = f"{local}@{self.c.domain}", tok
-        else:
-            raise web.HTTPBadRequest(text="need 'from_full', 'from' (e.g. bob), or 'token'")
-
-        subject = data.get("subject") or ""
-        body = data.get("body") or ""
-        html_body = data.get("html")
-
-        from .mailer import send_mail
-        result = await asyncio.to_thread(send_mail, self.c, mail_from, to, subject,
-                                         body, html_body)
-        self.store.add_sent_mail(label, mail_from, to, subject,
-                                 {"body": body, "html": html_body, "result": result})
-        log.info("send from=%s to=%s ok=%s", mail_from, to, result.get("ok"))
-        return web.json_response({"from": mail_from, "to": to, "label": label, "result": result},
-                                 status=200 if result.get("ok") else 502)
+        from .mailer import build_message
+        msg = build_message(self.c, mail_from, to, data.get("subject") or "",
+                            data.get("body") or "", data.get("html") or "",
+                            name or None)
+        return web.json_response({"from": mail_from, "to": to, "raw": msg.as_string()})
 
     async def sent(self, request: web.Request) -> web.Response:
         token = _require(request, "token")
@@ -763,6 +886,7 @@ def make_api_app(config: Config, store: Store, acme: AcmeStore,
     r.add_get("/file", api.file_get)
     r.add_delete("/files", api.file_delete)
     r.add_post("/send", api.send)
+    r.add_post("/send/preview", api.send_preview)
     r.add_get("/sent", api.sent)
     r.add_get("/lookup", api.lookup)
     r.add_get("/craft", api.craft)

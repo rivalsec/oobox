@@ -469,15 +469,32 @@ The dashboard's XSS tab builds these payloads for you.
 - **Receive**: any `<name>@OOBDOMAIN` (or `*@<label>.OOBDOMAIN`) is accepted and grouped under
   `<name>`; bodies + extracted links are stored. Read via `GET /mail?token=<name>` or the
   Emails page.
-- **Send** (requires `OOB_SMTP_SEND`): from any address you like —
+- **Send** (requires `OOB_SMTP_SEND`): from any address you like — a mailbox on your zone
+  (`from`), a token, or a full address at any domain (`from_full`, for spoof/SPF testing),
+  with an optional display name (`from_name`). Body is `body` (text), `html`, or both
+  (multipart/alternative; html-only sends a single `text/html` part):
 
   ```bash
   curl -s "${auth[@]}" -X POST $API/send \
     -d '{"from":"bob","to":"victim@target.com","subject":"hi","body":"…"}'
+  curl -s "${auth[@]}" -X POST $API/send \
+    -d '{"from_full":"noreply@victim.tld","from_name":"Victim Mail","to":"target@corp.com",
+         "subject":"hi","html":"<a href=…><img src=…>…</a>"}'
   ```
 
-  Replies come back to that mailbox. A smarthost (`OOB_SMTP_RELAY`) is the reliable delivery
-  path; direct-to-MX is best-effort.
+  Replies come back to the catch-all only for addresses on your own zone. A smarthost
+  (`OOB_SMTP_RELAY`) is the reliable delivery path; direct-to-MX is best-effort. The
+  dashboard compose panels (Mail tab + Emails page) offer the same — including a
+  content-type selector that pre-fills an HTML template with OOB-correlated link and
+  image examples.
+
+- **Raw editing** (dashboard "raw edit" button, or API): `POST /send/preview` returns the
+  exact RFC822 bytes the form would send (built by the same code that sends it); edit
+  anything — headers included (`X-` headers, `Bcc`, `Date`, hand-crafted MIME) — then
+  `POST /send {"raw": …}` transmits it verbatim. Hybrid envelope: the request's sender
+  fields + `to` set `MAIL FROM`/`RCPT TO` when given (so bounces/replies still land in
+  your catch-all), else the envelope is derived from the raw headers (and `Bcc` is then
+  stripped); with an explicit `to`, `Bcc` is deleted so it never leaks.
 
 - **Crafted addresses** (embed a target domain): the **Mail** tab and the **Emails** page have
   an address builder — enter a `victim.tld` and it generates catch-addresses that embed it, so
@@ -533,7 +550,8 @@ except `/healthz`, `/login`, `/favicon.ico`. List endpoints paginate newest-firs
 | `POST /upload?token=&path=` (raw body) | host a payload (re-upload to edit); optional programmable response via `status`, `redirect`, `delay_ms`, repeatable `header=Name: Value` (path `/*` = per-token catch-all); returns its URL |
 | `GET /files?token=` · `GET /file?token=&path=` | hosted files (list · raw bytes) |
 | `DELETE /files?token=&path=` | delete one hosted file (row + on-disk bytes) |
-| `POST /send` `{to,subject,body,html?}` + `from` \| `token` \| `from_full` | send mail (needs `OOB_SMTP_SEND`); `from_full` sends from a crafted address in your zone |
+| `POST /send` `{to,subject}` + `body` and/or `html` + `from` \| `token` \| `from_full` (any domain) \| `from_name?` | send mail (needs `OOB_SMTP_SEND`); html-only sends a single `text/html` part, body+html is multipart/alternative |
+| `POST /send/preview` · `POST /send {"raw":…}` | raw mode: preview the exact RFC822 bytes a form would send · send an edited raw message verbatim (all headers editable; request from/to set the envelope when given, else derived from headers) |
 | `GET /sent?token=` | sent mail |
 | `GET /lookup?token=` | cross-channel counts + the token's `meta` + endpoints |
 | `GET /craft?victim=&token=` | crafted victim-embedding catch-addresses (validation-bypass shapes) |

@@ -314,6 +314,145 @@ async def run_selftest() -> bool:
             chk.ok(len(sl["sent"]) == 1 and sl["sent"][0]["mail_to"] == f"{token2}@{DOMAIN}",
                    "sent mail recorded under sender token")
 
+            # --- outbound send: html-only, any-domain custom From + display name ---
+            async with sess.post(f"{api}/send", headers=hdr,
+                                 json={"from_full": "noreply@spoof.test", "from_name": "Mail Team",
+                                       "token": token, "to": f"{token2}@{DOMAIN}",
+                                       "subject": "html only", "html": "<p>hi <b>html</b></p>"}) as r:
+                chk.ok(r.status == 200, "custom out-of-zone from_full accepted")
+            await asyncio.sleep(0.3)
+            async with sess.get(f"{api}/mail?token={token2}", headers=hdr) as r:
+                rec = await r.json()
+            chk.ok(len(rec["emails"]) == 2 and rec["emails"][1]["mail_from"] == "noreply@spoof.test",
+                   "spoofed From delivered with envelope intact")
+            async with sess.get(f"{api}/mail/{rec['emails'][1]['id']}?token={token2}", headers=hdr) as r:
+                det = (await r.json())["detail"]
+            chk.ok(det["html"] and not det["text"], "html-only message has no plain part")
+            chk.ok("Mail Team <noreply@spoof.test>" in det["raw"], "From display name present")
+            async with sess.post(f"{api}/send", headers=hdr,
+                                 json={"token": token, "to": f"{token2}@{DOMAIN}",
+                                       "subject": "alt", "body": "plain part",
+                                       "html": "<p>html part</p>"}) as r:
+                chk.ok(r.status == 200, "text+html alternative send ok")
+            await asyncio.sleep(0.3)
+            async with sess.get(f"{api}/mail?token={token2}", headers=hdr) as r:
+                rec = await r.json()
+            async with sess.get(f"{api}/mail/{rec['emails'][2]['id']}?token={token2}", headers=hdr) as r:
+                det = (await r.json())["detail"]
+            chk.ok("plain part" in det["text"] and "html part" in det["html"],
+                   "alternative message carries both parts")
+            async with sess.get(f"{api}/sent?token={token}", headers=hdr) as r:
+                sl = await r.json()
+            chk.ok(len(sl["sent"]) == 3 and sl["sent"][1]["mail_from"] == "noreply@spoof.test"
+                   and (sl["sent"][1]["detail"] or {}).get("from_name") == "Mail Team",
+                   "spoofed send recorded under fallback token with display name")
+            async with sess.post(f"{api}/send", headers=hdr,
+                                 json={"from_full": '"quoted local"@x.test', "to": "a@b.test"}) as r:
+                chk.ok(r.status == 400, "malformed from_full still rejected")
+
+            # --- raw preview: exact RFC822 bytes of what the form would send ---
+            async with sess.post(f"{api}/send/preview", headers=hdr,
+                                 json={"token": token, "to": f"{token2}@{DOMAIN}",
+                                       "subject": "pv", "body": "pv body",
+                                       "html": "<p>pv html</p>", "from_name": "PV"}) as r:
+                chk.ok(r.status == 200, "preview returns the raw message")
+                pv = (await r.json())["raw"]
+            chk.ok(f"PV <{token}@{DOMAIN}>" in pv and "pv body" in pv and "pv html" in pv
+                   and "multipart/alternative" in pv and f"To: {token2}@{DOMAIN}" in pv,
+                   "preview raw has headers + both alternative parts")
+
+            # --- raw send: verbatim headers, envelope derived from them (Bcc stripped) ---
+            raw1 = ("From: Raw Sender <spoof@x.test>\r\n"
+                    f"To: {token2}@{DOMAIN}\r\n"
+                    "Subject: raw ui\r\n"
+                    "X-OOB-Custom: yes\r\n"
+                    f"Bcc: other@{DOMAIN}\r\n"
+                    "Content-Type: text/plain; charset=us-ascii\r\n"
+                    "\r\n"
+                    "raw body line\r\n")
+            async with sess.post(f"{api}/send", headers=hdr, json={"raw": raw1}) as r:
+                rr = await r.json()
+                chk.ok(r.status == 200 and rr["result"].get("ok")
+                       and rr["from"] == "spoof@x.test",
+                       "raw send delivered, envelope = raw From header")
+            await asyncio.sleep(0.3)
+            async with sess.get(f"{api}/mail?token={token2}", headers=hdr) as r:
+                rec = await r.json()
+            mrow = next((m for m in rec["emails"] if m["subject"] == "raw ui"), None)
+            chk.ok(mrow is not None and mrow["mail_from"] == "spoof@x.test",
+                   "raw send received under recipient token")
+            async with sess.get(f"{api}/mail/{mrow['id']}?token={token2}", headers=hdr) as r:
+                rdet = (await r.json())["detail"]
+            chk.ok("X-OOB-Custom: yes" in rdet["raw"] and "raw body line" in rdet["text"],
+                   "custom header + body delivered verbatim")
+            chk.ok("Bcc:" not in rdet["raw"], "Bcc stripped when envelope derived from headers")
+            async with sess.get(f"{api}/sent?token=_catchall", headers=hdr) as r:
+                sraw = await r.json()
+            chk.ok(any(s["mail_from"] == "spoof@x.test" and "X-OOB-Custom: yes" in s["detail"]["raw"]
+                       for s in sraw["sent"]),
+                   "raw send recorded (label _catchall) with the raw text")
+
+            # --- raw send with explicit envelope: token sender + to, Bcc never leaks ---
+            raw2 = raw1.replace("Subject: raw ui", "Subject: raw ui 2")
+            async with sess.post(f"{api}/send", headers=hdr,
+                                 json={"raw": raw2, "token": token,
+                                       "to": f"{token2}@{DOMAIN}"}) as r:
+                rr2 = await r.json()
+                chk.ok(r.status == 200 and rr2["result"].get("ok")
+                       and rr2["from"] == f"{token}@{DOMAIN}",
+                       "raw send with explicit envelope delivered")
+            await asyncio.sleep(0.3)
+            async with sess.get(f"{api}/mail?token={token2}", headers=hdr) as r:
+                rec = await r.json()
+            mrow2 = next((m for m in rec["emails"] if m["subject"] == "raw ui 2"), None)
+            chk.ok(mrow2 is not None and mrow2["mail_from"] == f"{token}@{DOMAIN}",
+                   "envelope used the token; header From stays the spoofed one")
+            async with sess.get(f"{api}/mail/{mrow2['id']}?token={token2}", headers=hdr) as r:
+                rdet2 = (await r.json())["detail"]
+            chk.ok("Bcc:" not in rdet2["raw"] and "From: Raw Sender <spoof@x.test>" in rdet2["raw"],
+                   "Bcc deleted with explicit rcpt; header From untouched")
+            async with sess.get(f"{api}/mail?token=other", headers=hdr) as r:
+                oth = await r.json()
+            chk.ok(len(oth["emails"]) == 0,
+                   "no copy bucketed under the Bcc address (Bcc deleted, no extra delivery)")
+            async with sess.get(f"{api}/sent?token={token}", headers=hdr) as r:
+                sl = await r.json()
+            chk.ok(any(s["subject"] == "raw ui 2"
+                       and "raw body line" in (s["detail"].get("body") or "")
+                       for s in sl["sent"]),
+                   "explicit-envelope raw send recorded under the token, text part extracted")
+
+            # --- raw multipart send: sent record carries the html part for the preview ---
+            raw3 = ("From: Parts <parts@x.test>\r\n"
+                    f"To: {token2}@{DOMAIN}\r\n"
+                    "Subject: raw multipart\r\n"
+                    "MIME-Version: 1.0\r\n"
+                    'Content-Type: multipart/alternative; boundary="b1"\r\n'
+                    "\r\n"
+                    "--b1\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "\r\n"
+                    "the plain half\r\n"
+                    "--b1\r\n"
+                    "Content-Type: text/html\r\n"
+                    "\r\n"
+                    "<p>the <b>html</b> half</p>\r\n"
+                    "--b1--\r\n")
+            async with sess.post(f"{api}/send", headers=hdr,
+                                 json={"raw": raw3, "token": token}) as r:
+                chk.ok(r.status == 200, "raw multipart send delivered")
+            async with sess.get(f"{api}/sent?token={token}", headers=hdr) as r:
+                sl = await r.json()
+            mrow3 = next((s for s in sl["sent"] if s["subject"] == "raw multipart"), None)
+            chk.ok(mrow3 is not None
+                   and "the plain half" in mrow3["detail"]["body"]
+                   and "<b>html</b>" in mrow3["detail"]["html"]
+                   and "--b1" in mrow3["detail"]["raw"],
+                   "raw multipart sent record has body + html + raw (sandboxed preview renders)")
+            async with sess.post(f"{api}/send", headers=hdr,
+                                 json={"raw": "Subject: no from\r\n\r\nx"}) as r:
+                chk.ok(r.status == 400, "raw message without From rejected")
+
             # --- poll interactions ---
             async with sess.get(f"{api}/poll?token={token}", headers=hdr) as r:
                 pl = await r.json()

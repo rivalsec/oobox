@@ -330,47 +330,183 @@ async function tabInteractions(body){
     }, "no DNS/HTTP/file hits yet");
 }
 
+// ---- shared outbound-mail composer -----------------------------------------
+// One compose form for the per-token Mail tab and the global Emails page: a content-type
+// select (plain text / html / text+html — picking an html mode pre-fills a minimal email
+// HTML doc whose link & image examples point at the panel's own OOB host, so clicks and
+// image loads correlate), a custom From accepting ANY address (own zone or a spoofed
+// target — plus an optional display name), to/subject, Send — and "raw edit", which
+// previews the exact RFC822 bytes (server-built, so it's what would go on the wire) for
+// editing anything, headers included, before a verbatim "send raw".
+//   opts.sender(customFrom) -> POST /send sender fields for the current custom From
+//     ("" = none typed); return null to abort with "from required";
+//   opts.htmlHost(customFrom) -> OOB host the HTML template's examples point at;
+//   opts.fromHint()  -> explanatory line when no custom From is typed;
+//   opts.fromRequired-> a From address must be typed (global Emails page);
+//   opts.onSent()    -> called after a successful send (refresh lists).
+function mailHtmlTemplate(host){
+  var base = (state.tls ? "https://" : "http://") + host;
+  return '<!doctype html>\n<html>\n'
+    + '<body style="margin:0;padding:24px;background:#f4f5f7;font-family:Arial,Helvetica,sans-serif;">\n'
+    + '  <div style="max-width:480px;margin:0 auto;background:#ffffff;border:1px solid #e2e4e9;border-radius:8px;padding:24px;">\n'
+    + '    <h2 style="margin:0 0 12px;font-size:18px;color:#1a1d26;">Hello,</h2>\n'
+    + '    <p style="margin:0 0 16px;color:#3d4351;">A quick test message.</p>\n'
+    + '    <p style="margin:0 0 16px;"><a href="' + base + '/link" style="color:#2563eb;">link example</a>'
+    + ' — the click lands in your HTTP log</p>\n'
+    + '    <p style="margin:0 0 16px;"><img src="' + base + '/pixel.gif" width="1" height="1" alt="" style="display:block;">'
+    + ' tracking-pixel example — the image load lands in your HTTP log</p>\n'
+    + '    <p style="margin:0;"><a href="' + base + '/banner">'
+    + '<img src="' + base + '/banner.png" width="320" height="60" alt="banner" style="display:block;border:0;"></a>'
+    + ' image-in-link example — banner.png and /banner both land in your HTTP log</p>\n'
+    + '  </div>\n</body>\n</html>\n';
+}
+function mailComposer(opts){
+  var customI = el("input",{type:"text",placeholder: opts.fromRequired
+    ? "from — any address, e.g. bob@"+state.domain+" or noreply@victim.tld"
+    : "custom from — any address, e.g. noreply@victim.tld (optional)"});
+  var nameI = el("input",{type:"text",placeholder:"display name (optional)",style:"max-width:240px"});
+  var toI = el("input",{type:"text",placeholder:"recipient@example.com"});
+  var subI = el("input",{type:"text",placeholder:"subject"});
+  var ctypeI = el("select",null,[
+    el("option",{value:"text",text:"plain text"}),
+    el("option",{value:"html",text:"html"}),
+    el("option",{value:"both",text:"text + html"})]);
+  var bodyI = el("textarea",{placeholder:"message…"});
+  var htmlI = el("textarea",{placeholder:"HTML message…"});
+  var tplBtn = el("button",{class:"srcbtn",text:"insert html template",hidden:true,
+    onclick:function(){ htmlI.value = mailHtmlTemplate(opts.htmlHost(customI.value.trim())); }});
+  htmlI.hidden = true;
+  var smsg = el("span",{class:"ok"});
+  var hint = el("div",{class:"hint"});
+  function syncHint(){
+    var v = customI.value.trim();
+    hint.textContent = v
+      ? "From: "+v+(opts.fromRequired ? "" : " (overrides the default sender)")
+      : opts.fromHint();
+  }
+  customI.addEventListener("input", syncHint);
+  syncHint();
+  ctypeI.addEventListener("change", function(){
+    var html = ctypeI.value !== "text";
+    htmlI.hidden = !html;
+    bodyI.hidden = ctypeI.value === "html";
+    tplBtn.hidden = !html;
+    if (html && !htmlI.value.trim())   // pre-fill once; typed HTML is never clobbered
+      htmlI.value = mailHtmlTemplate(opts.htmlHost(customI.value.trim()));
+  });
+  // Build the POST /send (or /send/preview) payload from the form; null + err on invalid.
+  function formPayload(checkMsg){
+    smsg.textContent=""; smsg.className="ok";
+    var custom = customI.value.trim();
+    var payload = opts.sender(custom);
+    if(!payload){ smsg.className="err"; smsg.textContent="from address required"; return null; }
+    if(toI.value.indexOf("@")<0){ smsg.className="err"; smsg.textContent="valid 'to' required"; return null; }
+    var mode = ctypeI.value;
+    if (checkMsg && ((mode==="text"  && !bodyI.value.trim()) ||
+                     (mode==="html"  && !htmlI.value.trim()) ||
+                     (mode==="both"  && !bodyI.value.trim() && !htmlI.value.trim()))){
+      smsg.className="err";
+      smsg.textContent="message required — type one or use the html template"; return null;
+    }
+    payload.to = toI.value.trim(); payload.subject = subI.value;
+    if (mode !== "html") payload.body  = bodyI.value;
+    if (mode !== "text") payload.html = htmlI.value;
+    if (nameI.value.trim()) payload.from_name = nameI.value.trim();
+    return payload;
+  }
+  // -- raw editing: preview the exact bytes (built server-side by the same code that
+  //    sends), edit anything — headers included — then send verbatim. --
+  var rawArea = el("textarea",{placeholder:"raw RFC822 message…"});
+  var rawMsg = el("span",{class:"ok"});
+  var sendRawBtn = el("button",{class:"primary",text:"send raw", onclick:async function(){
+    rawMsg.textContent=""; rawMsg.className="ok";
+    if(!rawArea.value.trim()){ rawMsg.className="err"; rawMsg.textContent="raw message empty"; return; }
+    var payload = {raw: rawArea.value};
+    // hybrid envelope: the form's from/to win when set, else the raw headers decide
+    var custom = customI.value.trim();
+    if (custom) payload.from_full = custom;
+    if (toI.value.indexOf("@") >= 0) payload.to = toI.value.trim();
+    var base = opts.sender("");
+    if (base && base.token) payload.token = base.token;
+    var r = await postStatus("/send", payload);
+    if(r.status===200 && r.json.result && r.json.result.ok){
+      smsg.textContent = "sent raw from "+r.json.from;
+      rawArea.value=""; rawWrap.hidden = true;
+      if (opts.onSent) opts.onSent();
+    } else {
+      rawMsg.className="err";
+      rawMsg.textContent = "failed: "+(((r.json.result||{}).error)||r.text||("error "+r.status));
+    }
+  }});
+  var closeRawBtn = el("button",{text:"close raw", onclick:function(){ rawWrap.hidden = true; }});
+  var rawWrap = el("div",null,[
+    el("div",{class:"hint",text:"raw message — “send raw” transmits exactly these bytes; "
+      +"every header is editable. The envelope (MAIL FROM / RCPT TO) comes from the "
+      +"form's from/to above when set, else from these headers (Bcc then stripped)."}),
+    rawArea,
+    el("div",{class:"row2"},[sendRawBtn, closeRawBtn, rawMsg])
+  ]);
+  rawWrap.hidden = true;
+  var rawBtn = el("button",{text:"raw edit", title:"edit the exact raw message (headers included) before sending",
+    onclick:async function(){
+      var p = formPayload(false);      // from/to must be set; message may be empty
+      if(!p) return;
+      var r = await postStatus("/send/preview", p);
+      if(r.status===200 && r.json.raw != null){
+        rawArea.value = r.json.raw; rawWrap.hidden = false;
+        rawMsg.textContent=""; rawMsg.className="ok";
+      } else {
+        smsg.className="err";
+        smsg.textContent = "preview failed: "+(r.text||("error "+r.status));
+      }
+    }});
+  var sendBtn = el("button",{class:"primary",text:"Send", onclick:async function(){
+    var payload = formPayload(true);
+    if(!payload) return;
+    var r = await postStatus("/send", payload);
+    if(r.status===200 && r.json.result && r.json.result.ok){
+      smsg.textContent = "sent from "+r.json.from;
+      toI.value=subI.value=bodyI.value=htmlI.value="";
+      if (opts.onSent) opts.onSent();
+    } else {
+      smsg.className="err";
+      smsg.textContent = "failed: "+(((r.json.result||{}).error)||r.text||("error "+r.status));
+    }
+  }});
+  var form = el("div",{class:"form"},[
+    el("h4",{text:"Send mail"}), hint,
+    el("div",{class:"grid2"},[ field("from", customI), field("from name", nameI) ]),
+    field("to", toI), el("div",{style:"height:8px"}), field("subject", subI),
+    el("div",{style:"height:8px"}),
+    el("div",{class:"row2"},[ field("content type", ctypeI), tplBtn ]),
+    bodyI, htmlI,
+    el("div",{class:"row2"},[sendBtn, rawBtn, smsg]),
+    rawWrap
+  ]);
+  return { node: form,
+           setCustomFrom: function(a){ customI.value = a || ""; syncHint(); } };
+}
+
 async function tabMail(body){
   clear(body);
-  var craftedFrom = null, applyFrom = null;
+  var applyFrom = null;
 
   // -- compose / send (only when outbound is enabled) --
   if (state.smtpSend){
-    var toI = el("input",{type:"text",placeholder:"recipient@example.com"});
-    var subI = el("input",{type:"text",placeholder:"subject"});
-    var bodyI = el("textarea",{placeholder:"message…"});
-    var smsg = el("span",{class:"ok"});
-    var fromLine = el("div",{class:"hint"});
-    function renderFromLine(){
-      clear(fromLine);
-      if (craftedFrom){
-        fromLine.appendChild(document.createTextNode("from "));
-        fromLine.appendChild(el("span",{class:"mono",text:craftedFrom}));
-        fromLine.appendChild(document.createTextNode(" (crafted) "));
-        fromLine.appendChild(el("button",{text:"×",title:"reset to token",
-          onclick:function(){ applyFrom(null); }}));
-      } else {
-        fromLine.textContent = "from "+state.sel+"@"+state.domain+" — replies come back to this token";
-      }
-    }
-    applyFrom = function(a){ craftedFrom = a || null; renderFromLine(); };
-    renderFromLine();
-    var sendBtn = el("button",{class:"primary",text:"Send", onclick:async function(){
-      smsg.textContent=""; smsg.className="ok";
-      if(!toI.value || toI.value.indexOf("@")<0){ smsg.className="err"; smsg.textContent="valid 'to' required"; return; }
-      var payload = craftedFrom ? {from_full:craftedFrom} : {token:state.sel};
-      payload.to=toI.value; payload.subject=subI.value; payload.body=bodyI.value;
-      var res = await post("/send", payload);
-      if(!res) return;
-      if(res.result && res.result.ok){ smsg.textContent="sent from "+res.from; toI.value=subI.value=bodyI.value=""; tabMailLists(body); }
-      else { smsg.className="err"; smsg.textContent="failed: "+((res.result||{}).error||"delivery error"); }
-    }});
-    body.appendChild(el("div",{class:"form"},[
-      el("h4",{text:"Send mail"}), fromLine,
-      field("to", toI), el("div",{style:"height:8px"}), field("subject", subI),
-      el("div",{style:"height:8px"}), bodyI,
-      el("div",{class:"row2"},[sendBtn, smsg])
-    ]));
+    var composer = mailComposer({
+      sender: function(custom){
+        return custom ? {from_full:custom, token:state.sel}   // custom From still records under this token
+                      : {token:state.sel};
+      },
+      fromHint: function(){
+        return "from "+state.sel+"@"+state.domain+" — replies come back to this token; "
+          + "type a custom from (any address) to override";
+      },
+      htmlHost: function(){ return state.sel + "." + state.domain; },
+      onSent: function(){ tabMailLists(body); }
+    });
+    applyFrom = composer.setCustomFrom;
+    body.appendChild(composer.node);
   } else {
     body.appendChild(el("div",{class:"hint",
       text:"Outbound send is disabled. Set OOB_SMTP_SEND=true (and OOB_SMTP_RELAY) to compose here."}));
@@ -398,11 +534,13 @@ async function tabMailLists(body){
         el("td",{class: res.ok?"ok":"err", text: res.ok?"ok":(res.error||"fail")})]);
       expandRow(stb, tr, function(td){
         var det = m.detail||{};
-        td.appendChild(kv([["from",m.mail_from],["to",m.mail_to],["subject",m.subject],
+        td.appendChild(kv([["from",m.mail_from+(det.from_name?" ("+det.from_name+")":"")],
+          ["to",m.mail_to],["subject",m.subject],
           ["result", res.ok ? ("delivered via "+(res.host||"?")+":"+(res.port||"?"))
                             : ("FAILED: "+(res.error||"delivery error"))]]));
         if (det.body){ td.appendChild(el("h4",{text:"Body"})); td.appendChild(el("pre",{text:det.body})); }
         if (det.html){ mailHtml(td, det.html); }
+        if (det.raw){ sourceToggle(td, "raw message", det.raw); }
       });
       stb.appendChild(tr);
     });
@@ -935,44 +1073,25 @@ async function renderEmails(){
   main.appendChild(el("h2",{text:"Emails — all mailboxes"}));
   main.appendChild(el("div",{class:"hint",text:"catch-all: any <name>@"+state.domain+" is received here (grouped by the name); click a row to read it"}));
 
-  // compose from any address, e.g. bob@OOBDOMAIN
-  var craftedFrom = null, applyFrom = null;
+  // compose from any address, e.g. bob@OOBDOMAIN or a spoofed noreply@victim.tld
+  var applyFrom = null;
   if (state.smtpSend){
-    var fromI = el("input",{type:"text",placeholder:"bob",style:"max-width:180px"});
-    var toI = el("input",{type:"text",placeholder:"victim@target.com"});
-    var subI = el("input",{type:"text",placeholder:"subject"});
-    var bodyI = el("textarea",{placeholder:"message…"});
-    var smsg = el("span",{class:"ok"});
-    var fromLine = el("div",{class:"hint"});
-    applyFrom = function(a){ craftedFrom = a || null;
-      clear(fromLine);
-      if (craftedFrom){
-        fromLine.appendChild(document.createTextNode("From override: "));
-        fromLine.appendChild(el("span",{class:"mono",text:craftedFrom}));
-        fromLine.appendChild(document.createTextNode(" "));
-        fromLine.appendChild(el("button",{text:"×",title:"clear override",
-          onclick:function(){ applyFrom(null); }}));
-      }
-    };
-    var sendBtn = el("button",{class:"primary",text:"Send", onclick:async function(){
-      smsg.textContent=""; smsg.className="ok";
-      if(!craftedFrom && !fromI.value.trim()){ smsg.className="err"; smsg.textContent="from required"; return; }
-      if(toI.value.indexOf("@")<0){ smsg.className="err"; smsg.textContent="valid 'to' required"; return; }
-      var payload = craftedFrom ? {from_full:craftedFrom} : {from:fromI.value.trim()};
-      payload.to=toI.value.trim(); payload.subject=subI.value; payload.body=bodyI.value;
-      var r = await postStatus("/send", payload);
-      if(r.status===200 && r.json.result && r.json.result.ok){
-        smsg.textContent="sent from "+r.json.from; toI.value=subI.value=bodyI.value=""; load(true);
-      } else { smsg.className="err";
-        smsg.textContent="failed: "+(((r.json.result||{}).error)||r.text||("error "+r.status)); }
-    }});
-    main.appendChild(el("div",{class:"form"},[
-      el("h4",{text:"Send mail"}),
-      el("div",{class:"row2"},[ el("span",{class:"hint",text:"from"}), fromI,
-        el("span",{class:"hint",text:"@"+state.domain}) ]), fromLine,
-      field("to", toI), el("div",{style:"height:8px"}), field("subject", subI),
-      el("div",{style:"height:8px"}), bodyI, el("div",{class:"row2"},[sendBtn, smsg])
-    ]));
+    var composer = mailComposer({
+      fromRequired: true,
+      sender: function(custom){ return custom ? {from_full:custom} : null; },
+      fromHint: function(){
+        return "from — any address: yours (bob@"+state.domain+" — replies come back) "
+          + "or a spoofed target (noreply@victim.tld)";
+      },
+      // template examples correlate under the from's leading label when one is readable
+      htmlHost: function(from){
+        var m = (from||"").toLowerCase().match(/^[a-z0-9][a-z0-9-]{0,62}[.@]/);
+        return (m ? m[0].slice(0,-1) + "." : "") + state.domain;
+      },
+      onSent: function(){ load(true); }
+    });
+    applyFrom = composer.setCustomFrom;
+    main.appendChild(composer.node);
   } else {
     main.appendChild(el("div",{class:"hint",
       text:"Outbound send is off (OOB_SMTP_SEND) — receiving to any <name>@"+state.domain+" still works."}));
