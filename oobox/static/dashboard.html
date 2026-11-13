@@ -387,13 +387,39 @@ function mailComposer(opts){
   customI.addEventListener("input", syncHint);
   syncHint();
   ctypeI.addEventListener("change", function(){
-    var html = ctypeI.value !== "text";
-    htmlI.hidden = !html;
-    bodyI.hidden = ctypeI.value === "html";
-    tplBtn.hidden = !html;
-    if (html && !htmlI.value.trim())   // pre-fill once; typed HTML is never clobbered
+    applyMode(ctypeI.value);
+    if (ctypeI.value !== "text" && !htmlI.value.trim())   // pre-fill once; typed HTML is never clobbered
       htmlI.value = mailHtmlTemplate(opts.htmlHost(customI.value.trim()));
   });
+  function applyMode(mode){                // show/hide the textareas for a content type
+    htmlI.hidden = mode === "text";
+    bodyI.hidden = mode === "html";
+    tplBtn.hidden = mode === "text";
+  }
+  function scrollToForm(){
+    try { if (form.scrollIntoView) form.scrollIntoView({behavior:"smooth", block:"start"}); }
+    catch (e) { /* jsdom / old browsers */ }
+  }
+  // Load a past send (or any {from,from_name,to,subject,body,html}) back into the form.
+  function loadMail(f){
+    f = f || {};
+    customI.value = f.from || "";
+    syncHint();
+    nameI.value = f.from_name || "";
+    toI.value = f.to || "";
+    subI.value = f.subject || "";
+    var mode = (f.html && (f.body || "").trim()) ? "both" : (f.html ? "html" : "text");
+    ctypeI.value = mode;
+    applyMode(mode);                        // no change event → no template auto-fill
+    bodyI.value = f.body || "";
+    htmlI.value = f.html || "";
+    scrollToForm();
+  }
+  function loadRaw(raw){
+    rawArea.value = raw || "";
+    rawWrap.hidden = !rawArea.value.trim();
+    scrollToForm();
+  }
   // Build the POST /send (or /send/preview) payload from the form; null + err on invalid.
   function formPayload(checkMsg){
     smsg.textContent=""; smsg.className="ok";
@@ -484,16 +510,17 @@ function mailComposer(opts){
     rawWrap
   ]);
   return { node: form,
-           setCustomFrom: function(a){ customI.value = a || ""; syncHint(); } };
+           setCustomFrom: function(a){ customI.value = a || ""; syncHint(); },
+           load: loadMail, loadRaw: loadRaw };
 }
 
 async function tabMail(body){
   clear(body);
-  var applyFrom = null;
+  var applyFrom = null, composer = null;
 
   // -- compose / send (only when outbound is enabled) --
   if (state.smtpSend){
-    var composer = mailComposer({
+    composer = mailComposer({
       sender: function(custom){
         return custom ? {from_full:custom, token:state.sel}   // custom From still records under this token
                       : {token:state.sel};
@@ -503,7 +530,7 @@ async function tabMail(body){
           + "type a custom from (any address) to override";
       },
       htmlHost: function(){ return state.sel + "." + state.domain; },
-      onSent: function(){ tabMailLists(body); }
+      onSent: function(){ tabMailLists(body, composer); }
     });
     applyFrom = composer.setCustomFrom;
     body.appendChild(composer.node);
@@ -516,12 +543,13 @@ async function tabMail(body){
   body.appendChild(emailCraftBuilder({ token: state.sel, onUseFrom: applyFrom }));
 
   var lists = el("div",{id:"maillists"}); body.appendChild(lists);
-  tabMailLists(body);
+  tabMailLists(body, composer);
 }
 
-async function tabMailLists(body){
+async function tabMailLists(body, composer){
   var box = body.querySelector("#maillists"); if(!box) return; clear(box);
-  // sent
+  // sent — no rendered preview here (that's for received mail); each row loads back
+  // into the compose form via "edit & resend" instead (raw sends also offer the raw text)
   var sd = await api("/sent?token="+encodeURIComponent(state.sel));
   if (sd && sd.sent.length){
     box.appendChild(el("div",{class:"sect",text:"Sent"}));
@@ -538,8 +566,26 @@ async function tabMailLists(body){
           ["to",m.mail_to],["subject",m.subject],
           ["result", res.ok ? ("delivered via "+(res.host||"?")+":"+(res.port||"?"))
                             : ("FAILED: "+(res.error||"delivery error"))]]));
+        if (composer){
+          var isDefault = m.mail_from === state.sel+"@"+state.domain;
+          td.appendChild(el("div",{class:"row2"},[
+            el("button",{text:"edit & resend",
+              title:"load this send back into the compose form above",
+              onclick:function(){
+                composer.load({
+                  from: isDefault ? "" : m.mail_from,
+                  from_name: det.from_name || "",
+                  to: (m.mail_to||"").split(",")[0].trim(),
+                  subject: m.subject || "",
+                  body: det.body || "",
+                  html: det.html || ""});
+              }}),
+            det.raw ? el("button",{text:"edit raw & resend",
+              title:"re-open the exact raw text that was sent",
+              onclick:function(){ composer.loadRaw(det.raw); }}) : null
+          ]));
+        }
         if (det.body){ td.appendChild(el("h4",{text:"Body"})); td.appendChild(el("pre",{text:det.body})); }
-        if (det.html){ mailHtml(td, det.html); }
         if (det.raw){ sourceToggle(td, "raw message", det.raw); }
       });
       stb.appendChild(tr);
